@@ -20,12 +20,12 @@
 "\\SET" {return SET;}
 "\\IF"  {return IF;}
 "\\ELSE" {return ELSE;}
+"\\ELSEIF" {return ELSEIF;}
 "\\DOWHILE" {return DOWHILE;}
 "\\DOFORI" {return DOFORI;}
 "\\CALL" {return CALL;}
 "\\RETURN" {return  RETURN;}
 
- /*COMMANDES UTILES*/
 "\\OD" {return OD;}
 "\\FI" {return FI;}
 
@@ -33,7 +33,11 @@
  /*TOKENS VU EN TP*/
 0|[1-9][0-9]*   { string_to_int(&yylval.integer, yytext); return INT; }
 [a-zA-Z][a-zA-Z0-9]* { yytext_copy(&yylval.str, yytext); return ID; }
-"+"|"-"|"*"|"/"|"{"|"}"|","|"("|")" { return yytext[0]; }
+"+"|"-"|"*"|"/"|"{"|"}"|","|"("|")"|"="|"<"|">" { return yytext[0]; }
+"<=" { return SOE; }
+">=" { return IOE; }
+"true" { return TRUE; }
+"false" { return FALSE; }
 [[:blank:]]     {}
 .               {fprintf(stderr, "Bad character: %c\n", yytext[0]);
                  yyterminate();}
