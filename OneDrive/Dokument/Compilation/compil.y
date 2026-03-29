@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <symbole.c>
+#include <symbole.h>
 
 int yylex();
 void yyerror(char const *s);
@@ -49,6 +51,8 @@ algorithme:
     {
         if(path == 0){
             /*Fonction pour ajouter dans la hashtable le nom de la fonction*/
+            Ajouter_Symbole($3);
+
         }   
     }
     liste_instructions 
@@ -84,16 +88,28 @@ instruction:
 
 affectation:
     SET '{' ID '}' '{' EXPR '}'{
-<<<<<<< HEAD
 
         if(path == 0){
-            
+            Symbole s = Recherche_Symbole($3);
+            if(s == NULL){
+                /*Si la variable n'existe pas on l'ajoute dans la table des symboles avec comme adresse path et on incrémente path de 1*/
+                Ajouter_Symbole($3);
+            }
         }else{
-            printf("\tpop ax\n");         
-            printf("\tconst bx, %s\n", $3); 
-            printf("\tstorew ax, bx\n");
-        }
-        
+            Symbole* s = rechercher_symbole_local($3);
+            int offset = s->offset; 
+
+            // 2. On récupère le résultat de EXPR (qui est sur la pile)
+            printf("\tpop ax\n"); 
+            
+            // 3. On calcule l'adresse de la variable (bp + offset)
+            printf("\tcp bx, bp\n");          // On copie la base de la pile
+            printf("\tconst cx, %d\n", offset); // On charge le décalage
+            printf("\tadd bx, cx\n");         // bx contient l'adresse exacte en mémoire
+            
+            // 4. On sauvegarde la valeur à cette adresse
+            printf("\tstorew ax, bx\n");      // On range ax à l'adresse pointée par bx
+        }    
      }
     ;
 
@@ -208,50 +224,6 @@ struct_end :
         printf("\tend\n");
     }
 
-=======
-        printf("\tpop ax\n");         
-        printf("\tconst bx,%s\n", $3); 
-        printf("\tstorew ax,bx\n");
-     }
-    ;
-si_cond: 
-    IF '{' EXPR  '=' EXPR'}'{
-        $$ = ++label_count; /* Génère le numéro unique, par ex: 1 */
-        
-        printf("\n\t; --- Évaluation de la condition IF ---\n");
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tcmp ax,bx\n");
-        
-        printf("\tjmpc L_VRAI_%d\n", $$); /* Si Vrai, on saute dans le bloc IF */
-        printf("\tjmp L_FAUX_%d\n", $$);  /* Si Faux, on saute au bloc ELSE (ou à la fin) */
-        
-        printf(":L_VRAI_%d\n", $$);       /* Pancarte du début du code VRAI */
-    }
-    ;
-bloc_if:
-    /* CAS 1 : IF tout court (sans ELSE) */
-    si_cond liste_instructions FI {
-        printf("\n\t; --- Fin du IF (sans ELSE) ---\n");
-        printf(":L_FAUX_%d\n", $1); /* S'il n'y a pas de ELSE, L_FAUX sert de fin ! */
-    }
-    
-    /* CAS 2 : IF avec un ELSE */
-  | si_cond liste_instructions ELSE {
-        /* On arrive ici quand les instructions du IF (Vrai) sont terminées */
-        printf("\tjmp L_FIN_%d\n", $1); /* On a fini le Vrai, on saute par-dessus le Else ! */
-        
-        printf("\n\t; --- Début du ELSE ---\n");
-        printf(":L_FAUX_%d\n", $1);     /* C'est ici qu'on atterrit si la condition était fausse */
-        
-    } 
-    liste_instructions FI {
-        /* On arrive ici à la toute fin */
-        printf("\n\t; --- Fin du bloc IF/ELSE ---\n");
-        printf(":L_FIN_%d\n", $1);      /* La pancarte de fin générale */
-    }
-    ;
->>>>>>> 9ee371a0b564571b34e9ceca8371618b378d8a9f
 EXPR:
     EXPR '+' EXPR { 
         printf("\tpop bx\n");
