@@ -18,5 +18,3 @@ typedef enum {
 
 /*yytext est le texte exact que flex vient de lire sur la sortie ou dans le code qu'on veut compiler*/
  
-/* Dans cette partie j'ai déclaré ce que bison s'apprête à recevoir
- */

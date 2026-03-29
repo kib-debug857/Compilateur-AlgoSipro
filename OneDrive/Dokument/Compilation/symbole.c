@@ -1,114 +1,137 @@
+/**
+ * @file table_symboles.c
+ * @brief Implémentation de la Table des Symboles pour AlgoSIPRO.
+ * Gestion de la mémoire de compilation via des Environnements Chaînés.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "symbole.h"
-#include "hashtable.h"
+#include "table_symboles.h"
 
-/* --- Variables Globales Privées --- */
-static hashtable *table_globale = NULL;
-static hashtable *table_locale = NULL;
+// ============================================================================
+// VARIABLES GLOBALES PRIVÉES (Encapsulation)
+// ============================================================================
 
-/* Compteurs pour les adresses sur la pile SIPRO (mots de 2 octets) */
-static int offset_local; 
-static int offset_argument; 
+/*
+ * Le pointeur 'contexte_courant' est déclaré static pour qu'il ne soit 
+ * accessible QUE depuis ce fichier. Bison n'a pas le droit d'y toucher 
+ * directement, il doit passer par les fonctions ci-dessous.
+ */
+static Env *contexte_courant = NULL;
 
-/* --- Fonctions requises par la HashTable pour les chaînes de caractères --- */
-static int cmp_str(const void *a, const void *b) {
-    return strcmp((const char *)a, (const char *)b);
-}
 
-static size_t hash_str(const void *str) {
-    size_t hash = 5381;
-    int c;
-    const char *s = (const char *)str;
-    while ((c = *s++)) {
-        hash = ((hash << 5) + hash) + c; 
-    }
-    return hash;
-}
+// ============================================================================
+// GESTION DU CYCLE DE VIE DES CONTEXTES
+// ============================================================================
 
-/* --- Implémentation de l'API --- */
-
-void init_symboles() {
-    // Création de la table globale (pour les noms d'algorithmes)
-    table_globale = hashtable_empty(cmp_str, hash_str, 0.75);
-}
-
-void entrer_contexte() {
-    // Appelé quand on lit \begin{algo}
-    // On crée la table locale pour cette fonction
-    table_locale = hashtable_empty(cmp_str, hash_str, 0.75);
-    
-    // Initialisation des compteurs d'adresses (SIPRO empile par sauts de 2)
-    offset_local = 2;       // Les variables locales monteront: BP+2, BP+4...
-    offset_argument = -4;   // Les arguments descendront: BP-4, BP-6...
-                            // (-2 est réservé pour l'adresse de retour IP)
-}
-
-void sortir_contexte() {
-    // Appelé quand on lit \end{algo}
-    // On détruit la table locale, libérant ainsi la mémoire !
-    if (table_locale != NULL) {
-        hashtable_dispose(&table_locale);
-        table_locale = NULL;
-    }
-}
-
-desc_identif* ajouter_algorithme(char* nom) {
-    desc_identif* nv_algo = malloc(sizeof(desc_identif));
-    strcpy(nv_algo->nom, nom);
-    nv_algo->classe = C_VARIABLE_GLOBALE;
-    nv_algo->type = T_ENTIER; 
-    nv_algo->adresse_rel = 0; // Pas de sens pour un algo
-    
-    hashtable_add(table_globale, nv_algo->nom, nv_algo);
-    return nv_algo;
-}
-
-desc_identif* ajouter_argument(char* nom) {
-    desc_identif* nv_arg = malloc(sizeof(desc_identif));
-    strcpy(nv_arg->nom, nom);
-    nv_arg->classe = C_ARGUMENT;
-    nv_arg->type = T_ENTIER;
-    
-    // On attribue l'adresse négative, puis on décale de 2 octets pour le suivant
-    nv_arg->adresse_rel = offset_argument;
-    offset_argument -= 2; 
-    
-    hashtable_add(table_locale, nv_arg->nom, nv_arg);
-    return nv_arg;
-}
-
-desc_identif* ajouter_variable_locale(char* nom) {
-    // On vérifie qu'elle n'existe pas déjà pour éviter les doublons
-    desc_identif* existante = hashtable_search(table_locale, nom);
-    if (existante != NULL) return existante;
-
-    desc_identif* nv_var = malloc(sizeof(desc_identif));
-    strcpy(nv_var->nom, nom);
-    nv_var->classe = C_VARIABLE_LOCALE;
-    nv_var->type = T_ENTIER;
-    
-    // On attribue l'adresse positive, puis on décale de 2 octets pour la suivante
-    nv_var->adresse_rel = offset_local;
-    offset_local += 2;
-    
-    hashtable_add(table_locale, nv_var->nom, nv_var);
-    return nv_var;
-}
-
-desc_identif* chercher_variable(char* nom) {
-    desc_identif* resultat = NULL;
-    
-    // Règle de la Diapo 16 : On cherche d'abord en local
-    if (table_locale != NULL) {
-        resultat = hashtable_search(table_locale, nom);
+void initDico(void) {
+    // 1. Allocation de la boîte globale
+    contexte_courant = (Env *)malloc(sizeof(Env));
+    if (contexte_courant == NULL) {
+        fprintf(stderr, "Erreur fatale : Échec d'allocation mémoire pour le Dictionnaire Global.\n");
+        exit(EXIT_FAILURE);
     }
     
-    // Si on n'a rien trouvé, on cherche en global
-    if (resultat == NULL && table_globale != NULL) {
-        resultat = hashtable_search(table_globale, nom);
+    // 2. Initialisation
+    contexte_courant->nb_symboles = 0;
+    contexte_courant->parent = NULL; // C'est la racine de notre arbre
+}
+
+void entreeFonction(void) {
+    // 1. Allocation de la nouvelle boîte locale
+    Env *nouveau_contexte = (Env *)malloc(sizeof(Env));
+    if (nouveau_contexte == NULL) {
+        fprintf(stderr, "Erreur fatale : Échec d'allocation mémoire pour un Contexte Local.\n");
+        exit(EXIT_FAILURE);
     }
     
-    return resultat;
+    // 2. Chaînage : on accroche la nouvelle boîte à l'actuelle
+    nouveau_contexte->nb_symboles = 0;
+    nouveau_contexte->parent = contexte_courant;
+    
+    // 3. On "entre" dans la boîte
+    contexte_courant = nouveau_contexte;
+}
+
+void sortieFonction(void) {
+    // Sécurité : On s'assure qu'on ne brûle pas la boîte globale
+    if (contexte_courant->parent == NULL) {
+        fprintf(stderr, "Erreur interne du compilateur : Tentative de destruction du Contexte Global !\n");
+        exit(EXIT_FAILURE);
+    }
+    
+    Env *boite_a_detruire = contexte_courant;
+    
+    // 1. On remonte d'un niveau (Le post-it retourne sur la boîte parente)
+    contexte_courant = boite_a_detruire->parent;
+    
+    // 2. Nettoyage profond : On libère toutes les chaînes allouées par strdup
+    for (int i = 0; i < boite_a_detruire->nb_symboles; i++) {
+        free(boite_a_detruire->symboles[i].nom);
+    }
+    
+    // 3. Destruction finale de la boîte locale
+    free(boite_a_detruire);
+}
+
+
+// ============================================================================
+// AJOUT ET RECHERCHE DES SYMBOLES
+// ============================================================================
+
+Symbole* ajouteIdentificateur(char *nom, int classe, type_t type, int adresse) {
+    // Sécurité : Vérification du débordement de la boîte
+    if (contexte_courant->nb_symboles >= MAX_SYMBOLES_LOCAUX) {
+        fprintf(stderr, "Erreur de compilation : Trop de variables locales/arguments dans cet algorithme (Max: %d).\n", MAX_SYMBOLES_LOCAUX);
+        exit(EXIT_FAILURE);
+    }
+    
+    int index = contexte_courant->nb_symboles;
+    
+    // strdup alloue dynamiquement de la mémoire pour copier le nom exactement.
+    // Très important car le 'nom' envoyé par Flex/Bison est souvent écrasé à la lecture du mot suivant.
+    contexte_courant->symboles[index].nom = strdup(nom);
+    
+    if (contexte_courant->symboles[index].nom == NULL) {
+        fprintf(stderr, "Erreur fatale : Échec d'allocation mémoire pour l'identifiant '%s'.\n", nom);
+        exit(EXIT_FAILURE);
+    }
+    
+    contexte_courant->symboles[index].classe = classe;
+    contexte_courant->symboles[index].type = type;
+    contexte_courant->symboles[index].adresse = adresse;
+    
+    contexte_courant->nb_symboles++;
+    
+    return &(contexte_courant->symboles[index]);
+}
+
+Symbole* rechercheExecutable(char *nom) {
+    Env *env_recherche = contexte_courant;
+    
+    // On remonte l'arbre généalogique jusqu'au sommet
+    while (env_recherche != NULL) {
+        // On fouille la boîte actuelle
+        for (int i = 0; i < env_recherche->nb_symboles; i++) {
+            if (strcmp(env_recherche->symboles[i].nom, nom) == 0) {
+                return &(env_recherche->symboles[i]); // Trouvé !
+            }
+        }
+        // Si non trouvé, on passe au parent
+        env_recherche = env_recherche->parent;
+    }
+    
+    return NULL; // Identifiant inconnu dans tous les contextes
+}
+
+Symbole* rechercheDeclarative(char *nom) {
+    // On fouille UNIQUEMENT la boîte courante (pas de boucle while)
+    for (int i = 0; i < contexte_courant->nb_symboles; i++) {
+        if (strcmp(contexte_courant->symboles[i].nom, nom) == 0) {
+            return &(contexte_courant->symboles[i]); // Conflit : déjà déclaré !
+        }
+    }
+    
+    return NULL; // Voie libre
 }
