@@ -477,5 +477,8 @@ int main() {
     path++;
     yyparse();
     printf("Compilation terminée sans erreur syntaxique !\n");
+
+    /*IL faut retourner le bon type de retour si on retourne un entier on affiche un entier et si c'est un boolean un boolean (true/false)*/
+    
     return EXIT_SUCCESS;
 }
