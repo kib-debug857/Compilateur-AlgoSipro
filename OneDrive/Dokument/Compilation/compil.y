@@ -47,20 +47,58 @@ programme:
     ;
 
 algorithme:
-    BEGIN_ALGO '{' ID '}' '{' liste_arguments '}' 
+    BEGIN_ALGO '{' ID '}' 
     {
-        if(path == 0){
-            /*Fonction pour ajouter dans la hashtable le nom de la fonction*/
-            Ajouter_Symbole($3);
-
-        }   
+        // PASSAGE 1 : Enregistrement de la fonction
+        if (path == 0) {
+            ajouteIdentificateur($3, C_FONCTION, UNDEF_T, 0); 
+        }
+        
+        entreeFonction(); // On ouvre le contexte local (Passage 1 ET 2)
+        
+        // Initialisation des compteurs d'offsets
+        current_arg_offset = -4;  // Le 1er argument sera à bp - 4
+        current_local_offset = 2; // La 1ère variable locale sera à bp + 2
+    }
+    '{' liste_arguments '}' 
+    {
+        // PASSAGE 2 : On génère le prologue de la fonction
+        if (path == 1) {
+            printf(":%s\n", $3);             // Label de l'algorithme
+            
+            // 1. Mise en place du Cadre d'Appel (Stack Frame)
+            printf("\tpush bp\n");           // Sauvegarde de l'ancien bp
+            printf("\tcp bp, sp\n");         // Le nouveau bp pointe au sommet actuel de la pile
+            
+            // 2. Réservation de l'espace pour les variables locales
+            // Au passage 2, current_local_offset contient la valeur finale calculée au passage 1
+            int nb_vars = (current_local_offset - 2) / 2; 
+            
+            if (nb_vars > 0) {
+                printf("\tconst ax, 0\n");
+                for(int i = 0; i < nb_vars; i++) {
+                    printf("\tpush ax\n");   // On empile des zéros pour allouer l'espace
+                }
+            }
+        }
     }
     liste_instructions 
     END_ALGO
-    { 
-        printf("\tret\n" );
-        /*Il faut vider la table local */
-    
+    {
+        // PASSAGE 2 : L'épilogue (Nettoyage avant de retourner)
+        if (path == 1) {
+            // 1. On détruit les variables locales en redescendant sp à bp
+            printf("\tcp sp, bp\n"); 
+            
+            // 2. On restaure le bp de la fonction qui nous a appelé
+            printf("\tpop bp\n");    
+            
+            // 3. L'instruction ret dépile l'adresse de retour (mise par le call) et saute [cite: 338, 339]
+            printf("\tret\n");       
+        }
+        
+        // On ferme la boîte dans la table des symboles (Passage 1 ET 2)
+        sortieFonction(); 
     }
     ;
 
@@ -89,29 +127,31 @@ instruction:
 affectation:
     SET '{' ID '}' '{' EXPR '}'{
 
-        if(path == 0){
-            Symbole s = Recherche_Symbole($3);
-            if(s == NULL){
-                /*Si la variable n'existe pas on l'ajoute dans la table des symboles avec comme adresse path et on incrémente path de 1*/
-                Ajouter_Symbole($3);
+        if (path == 0) {
+            // PASSAGE 1 : On gère la table des symboles
+            Symbole* s = rechercheDeclarative($3);
+            if (s == NULL) {
+                ajouteIdentificateur($3, C_VARIABLE, INT_T, current_local_offset);
+                current_local_offset += 2; 
             }
-        }else{
-            Symbole* s = rechercher_symbole_local($3);
-            int offset = s->offset; 
+        } 
+        else if (path == 1) {
+            // PASSAGE 2 : On écrit l'assembleur
+            Symbole* s = rechercheExecutable($3);
+            if (s == NULL) {
+                fprintf(stderr, "Erreur : La variable '%s' n'existe pas.\n", $3);
+                exit(EXIT_FAILURE);
+            }
 
-            // 2. On récupère le résultat de EXPR (qui est sur la pile)
+            int offset = s->adresse; 
+
             printf("\tpop ax\n"); 
-            
-            // 3. On calcule l'adresse de la variable (bp + offset)
-            printf("\tcp bx, bp\n");          // On copie la base de la pile
-            printf("\tconst cx, %d\n", offset); // On charge le décalage
-            printf("\tadd bx, cx\n");         // bx contient l'adresse exacte en mémoire
-            
-            // 4. On sauvegarde la valeur à cette adresse
-            printf("\tstorew ax, bx\n");      // On range ax à l'adresse pointée par bx
-        }    
-     }
-    ;
+            printf("\tcp bx, bp\n");          
+            printf("\tconst cx, %d\n", offset); 
+            printf("\tadd bx, cx\n");         
+            printf("\tstorew ax, bx\n");      
+        }
+    }
 
 struct_dowhile:
     DOWHILE
