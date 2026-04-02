@@ -37,6 +37,7 @@ typedef struct {
     int classe;      ///< C_FONCTION, C_VARIABLE, ou C_ARGUMENT
     type_t type;     ///< INT_T ou BOOL_T pour le typage strict des expressions
     int adresse;     ///< Offset relatif par rapport à BP (ex: 2, 4, -4, -6)
+    int nb_params;
 } Symbole;
 
 /**
@@ -105,5 +106,7 @@ Symbole* rechercheExecutable(char *nom);
  * @return Pointeur vers le symbole s'il y a conflit, NULL si la déclaration est possible.
  */
 Symbole* rechercheDeclarative(char *nom);
+
+void fixerOffsetsArguments(int nb_args);
 
 #endif 

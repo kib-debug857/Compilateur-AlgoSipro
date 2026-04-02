@@ -2,255 +2,249 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <symbole.c>
-#include <symbole.h>
+#include "type.h"    // <-- NOUVEAU : Inclusion indispensable pour type_t
+#include "symbole.h" 
 
 int yylex();
 void yyerror(char const *s);
-int label_count = 0;
-%}
+extern FILE *yyin;
+extern void yyrestart(FILE *input_file);
 
-/*Définition des labels utilisé pour les structures de contrôle*/
-%define int label_count 0
-%define label_dowhile "dowhile_label_"
-%define label_dofori "dofori_label_"
-%define label_if "if_label_"
-%define label_else "else_label_"
-%define label_operateur "operateur_label_"
-int path = 0; /* Variable pour récupérer les paramètres et les variables locales*/
+// --- VARIABLES GLOBALES POUR LA GÉNÉRATION DE CODE ---
+int label_count = 0;
+int path = 0; 
+
+// Gestion de la mémoire de la machine SIPRO
+int offset_courant = 2; 
+int memoire_locales[100]; 
+int index_algo_p1 = 0;    
+int index_algo_p2 = 0;    
+
+/* DÉFINITION DES LABELS POUR L'ASSEMBLEUR */
+#define label_dowhile "dowhile_label_"
+#define label_dofori "dofori_label_"
+#define label_if "if_label_"
+#define label_else "else_label_"
+#define label_operateur "operateur_label_"
+%}
 
 %union {
     int integer;
     char* str;
+    type_t type_expr; // <-- NOUVEAU : Transport du type
 }
 
 /* Les tokens envoyés par Flex */
-%token BEGIN_ALGO END_ALGO SET IF ELSE ELSEIF DOWHILE DOFORI CALL RETURN OD FI
+%token BEGIN_ALGO END_ALGO SET IF ELSE DOWHILE DOFORI CALL RETURN OD FI
 %token <integer> INT
 %token <str> ID
-%type <integer> si_cond 
-%type <integer> liste_param_call
+%token TRUE FALSE
+
+/* Types pour les règles qui remontent des valeurs */
+%type <integer> liste_arguments liste_param_call 
+%type <type_expr> EXPR // <-- NOUVEAU : EXPR a un type
+
 /* Priorités mathématiques */
 %left '<' '>' '=' SOE IOE
 %left '+' '-'
 %left '*' '/'
 
-/*Les booleans*/
-%token TRUE FALSE
-
-/* Le token de départ */
-
 %start programme
 
 %%
 
+/* ========================================================================== */
+/* STRUCTURE GLOBALE DU PROGRAMME                                             */
+/* ========================================================================== */
+
 programme:
-    algorithme appel_final
+    liste_algorithmes 
+    {
+        if (path == 1) {
+            printf(":debut_programme\n");
+        }
+    }
+    appel_final
     ;
 
+liste_algorithmes:
+    algorithme
+    | liste_algorithmes algorithme
+    ;
+
+/* ========================================================================== */
+/* DÉFINITION D'UN ALGORITHME                                                 */
+/* ========================================================================== */
+
 algorithme:
-    BEGIN_ALGO '{' ID '}' 
+    BEGIN_ALGO '{' ID '}' '{' 
     {
-        // PASSAGE 1 : Enregistrement de la fonction
+        // --- SÉCURITÉ : Unicité des fonctions (Règle L III) ---
         if (path == 0) {
-            ajouteIdentificateur($3, C_FONCTION, UNDEF_T, 0); 
-        }
-        
-        entreeFonction(); // On ouvre le contexte local (Passage 1 ET 2)
-        
-        // Initialisation des compteurs d'offsets
-        current_arg_offset = -4;  // Le 1er argument sera à bp - 4
-        current_local_offset = 2; // La 1ère variable locale sera à bp + 2
-    }
-    '{' liste_arguments '}' 
-    {
-        // PASSAGE 2 : On génère le prologue de la fonction
-        if (path == 1) {
-            printf(":%s\n", $3);             // Label de l'algorithme
-            
-            // 1. Mise en place du Cadre d'Appel (Stack Frame)
-            printf("\tpush bp\n");           // Sauvegarde de l'ancien bp
-            printf("\tcp bp, sp\n");         // Le nouveau bp pointe au sommet actuel de la pile
-            
-            // 2. Réservation de l'espace pour les variables locales
-            // Au passage 2, current_local_offset contient la valeur finale calculée au passage 1
-            int nb_vars = (current_local_offset - 2) / 2; 
-            
-            if (nb_vars > 0) {
-                printf("\tconst ax, 0\n");
-                for(int i = 0; i < nb_vars; i++) {
-                    printf("\tpush ax\n");   // On empile des zéros pour allouer l'espace
-                }
+            Symbole *existant = rechercheExecutable($3);
+            if (existant != NULL && existant->classe == C_FONCTION) {
+                fprintf(stderr, "Erreur sémantique : La fonction '%s' est déjà déclarée.\n", $3);
+                exit(EXIT_FAILURE);
             }
+            ajouteIdentificateur($3, C_FONCTION, UNDEF, 0); 
+        }
+
+        entreeFonction();   
+        offset_courant = 2; 
+    }
+    liste_arguments '}' 
+    {
+        // --- SÉCURITÉ : Enregistrement du nombre d'arguments ---
+        if (path == 0) {
+            Symbole *func_symb = rechercheExecutable($3);
+            if (func_symb != NULL) {
+                func_symb->nb_params = $7;
+            }
+        }
+
+        fixerOffsetsArguments($7);
+        if(path == 1){
+            printf(":%s\n", $3);             
+            printf("\tpush bp\n");           
+            printf("\tcp bp,sp\n");         
+            
+            int espace = memoire_locales[index_algo_p2];
+            if (espace > 0) {
+                printf("\tconst cx,%d\n", espace);
+                printf("\tadd sp,cx\n");    
+            }
+            index_algo_p2++;
         }
     }
     liste_instructions 
     END_ALGO
-    {
-        // PASSAGE 2 : L'épilogue (Nettoyage avant de retourner)
-        if (path == 1) {
-            // 1. On détruit les variables locales en redescendant sp à bp
-            printf("\tcp sp, bp\n"); 
-            
-            // 2. On restaure le bp de la fonction qui nous a appelé
-            printf("\tpop bp\n");    
-            
-            // 3. L'instruction ret dépile l'adresse de retour (mise par le call) et saute [cite: 338, 339]
-            printf("\tret\n");       
+    { 
+        if (path == 0) {
+            memoire_locales[index_algo_p1] = offset_courant - 2;
+            index_algo_p1++;
+        } else {
+            printf("\tcp sp,bp\n");
+            printf("\tpop bp\n");
+            printf("\tret\n");
         }
-        
-        // On ferme la boîte dans la table des symboles (Passage 1 ET 2)
         sortieFonction(); 
     }
     ;
 
 liste_arguments:
-    /* vide */
-    | ID
+    /* vide */ { $$ = 0; }
+    | ID 
+    {
+        ajouteIdentificateur($1, C_ARGUMENT, INT_T, 0); 
+        $$ = 1;
+    }
     | liste_arguments ',' ID
+    {
+        ajouteIdentificateur($3, C_ARGUMENT, INT_T, 0);
+        $$ = $1 + 1; 
+    }
     ;
 
+/* ========================================================================== */
+/* INSTRUCTIONS                                                               */
+/* ========================================================================== */
+
 liste_instructions:
-    /* vide */
-    | liste_instructions instruction  
+    instruction
+    | liste_instructions instruction
     ;
 
 instruction:
     affectation
-    /* On ajoutera les autres instructions ici plus tard */
-    |struct_dowhile
-    |struct_dofori
-    |struct_if
-    |struct_return
-    |appel_final
-    |struct_end
+    | struct_if
+    | struct_dowhile
+    | struct_dofori
+    | struct_return
+    | appel_proc
     ;
 
 affectation:
-    SET '{' ID '}' '{' EXPR '}'{
-
-        if (path == 0) {
-            // PASSAGE 1 : On gère la table des symboles
-            Symbole* s = rechercheDeclarative($3);
-            if (s == NULL) {
-                ajouteIdentificateur($3, C_VARIABLE, INT_T, current_local_offset);
-                current_local_offset += 2; 
-            }
-        } 
-        else if (path == 1) {
-            // PASSAGE 2 : On écrit l'assembleur
-            Symbole* s = rechercheExecutable($3);
-            if (s == NULL) {
-                fprintf(stderr, "Erreur : La variable '%s' n'existe pas.\n", $3);
+    SET '{' ID '}' '{' EXPR '}' 
+    {
+        Symbole *symb = rechercheExecutable($3);
+        
+        // --- SÉCURITÉ : Inférence ou vérification de type ---
+        if (symb == NULL) {
+            // Inférence
+            symb = ajouteIdentificateur($3, C_VARIABLE, $6, offset_courant);
+            offset_courant += 2; 
+        } else {
+            // Vérification
+            if (symb->type != $6) {
+                fprintf(stderr, "Erreur sémantique : Incompatibilité de type. La variable '%s' ne peut pas changer de type.\n", $3);
                 exit(EXIT_FAILURE);
             }
-
-            int offset = s->adresse; 
-
-            printf("\tpop ax\n"); 
-            printf("\tcp bx, bp\n");          
-            printf("\tconst cx, %d\n", offset); 
-            printf("\tadd bx, cx\n");         
-            printf("\tstorew ax, bx\n");      
+        }
+        
+        if (path == 1) {
+            printf("\tpop ax\n");                      
+            printf("\tcp bx,bp\n"); 
+            if (symb->adresse < 0) {
+                printf("\tconst cx,%d\n", -symb->adresse);
+                printf("\tsub bx,cx\n");                   
+            } else {
+                printf("\tconst cx,%d\n", symb->adresse);
+                printf("\tadd bx,cx\n");                   
+            }
+            printf("\tstorew ax,bx\n");               
         }
     }
+    ;
 
-struct_dowhile:
-    DOWHILE
-    /*D'apport je commence par définir mon point d'encrage c'est la que je vais revenir à chaque tour de boucle gestion du while  */
+struct_return:
+    RETURN '{' EXPR '}' 
     {
-        label_count++;
-        printf("\t:%s%d\n", label_dowhile, label_count);
-        $<integer>$ = label_count; /* Stocke le numéro de label pour ce DO-WHILE */
-    } 
-    liste_instructions
-    '{'EXPR'}' OD
-    {
-        /*Dans l'odre il faut récupérer le résultat de l'expression puis faire le test avec la boucle et si il est vrai retourner au point d'encrage sinon sortir de la boucle */
-        printf("\tpop ax\n"); /* Récupère le résultat de l'expression */
-        printf("\tconst bx,1\n"); /* définit en dur la valeur 1 pour la comparaison dans le registre bx */
-        printf("\tcmp ax,bx\n"); /* Compare le résultat de l'expression avec 1 si les deux sont à 1 alors on continue sinon cela veut dire que ax n'est pas vrai */
-
-        print("\tconst dx,%s%d\n", label_dowhile, $<integer>$); /* Définit le label de saut pour la boucle DO-WHILE dans le registre dx*/
-        printf("\tjmpc dx\n"); /* Si l'expression est vraie, retourne au point d'encrage */
+        if (path == 1) {
+            printf("\tpop ax\n");      
+            printf("\tcp sp,bp\n");   
+            printf("\tpop bp\n");      
+            printf("\tret\n");         
+        }
     }
     ;
 
-struct_dofori:
-    DOFORI '{' ID '}' '{' EXPR '}' 
-    //On commence par créer le point d'encrage de la boucle fori
-    {   
-        int l_debut = label_count++;
-        int l_fin = label_count++;
-        
-        printf("\tpop ax\n"); 
-        printf("\tconst bx, %s\n", $3); 
-        printf("\tstorew ax, bx\n");   // On range la valeur de départ dans ax 
-
-    }
-    '{' EXPR '}' 
-    {
-        printf("\t:%s%d\n", label_dofori, l_debut);
-
-        printf("\tpop ax\n");
-        printf("\tconst bx,%s\n",$9);
-        printf("\tsless ax,bx\n");
-
-        /*Retour au début label*/
-        printf("\tconst dx,%s%d\n",label_dofori,l_debut);
-        printf("\tjumpc dx\n");
-
-
-        /*Fin de la boucle*/
-        printf("\tconst dx,%s%d\n", label_dofori, l_fin);
-        printf("\tjmp dx\n");
-
-
-    }liste_instructions OD
-    {
-
-    }
-    ;
-    
+/* --- IF / ELSE --- */
 struct_if:
     IF '{' EXPR '}' 
     {   
+        // --- SÉCURITÉ : La condition doit être booléenne ---
+        if ($3 != BOOL_T) {
+            fprintf(stderr, "Erreur sémantique : La condition du IF doit être booléenne.\n");
+            exit(EXIT_FAILURE);
+        }
+
         if (path == 1) {
             int l_sinon = ++label_count;
             int l_fin = ++label_count;
-
             $<integer>$ = (l_sinon << 16) | (l_fin & 0xFFFF);
             
-            // Évaluation
             printf("\tpop ax\n");          
             printf("\tconst bx,0\n");     
+            printf("\tconst dx,%s%d\n", label_else, l_sinon); // CONST AVANT CMP !
             printf("\tcmp ax,bx\n");      
-
-            // Saut au ELSE si Faux
-            printf("\tconst dx,%s%d\n", label_else, l_sinon);
             printf("\tjmpc dx\n");        
         }
     }
     liste_instructions 
     {
         if (path == 1) {
-            int l_sinon = ($<integer>4 >> 16) & 0xFFFF;
-            int l_fin = $<integer>4 & 0xFFFF;
+            int l_sinon = ($<integer>5 >> 16) & 0xFFFF;
+            int l_fin = $<integer>5 & 0xFFFF;
             
-            // Le IF est fini, on saute tout à la fin
             printf("\tconst dx,%s%d\n", label_if, l_fin);
             printf("\tjmp dx\n");          
-            
-            // On pose la cible pour le ELSE
             printf(":%s%d\n", label_else, l_sinon);
         }
     }
-    suite_if FI // <-- N'oublie pas le FI ici, ET l'Action 3 en dessous !
+    suite_if FI 
     {
         if (path == 1) {
-            int l_fin = $<integer>4 & 0xFFFF;
-            
-            // Le point de chute final pour tout le monde !
+            int l_fin = $<integer>5 & 0xFFFF;
             printf(":%s%d\n", label_if, l_fin);
         }
     }
@@ -259,271 +253,562 @@ struct_if:
 suite_if:
     /* vide */  
     | ELSE liste_instructions 
-    /* RIEN À AJOUTER ICI ! La liste_instructions se gère toute seule. */
     ;
 
-struct_return :
-    RETURN '{' EXPR '}' 
-    {
-        printf("\tpop ax\n");
-    }
-
-struct_end :
-    END_ALGO 
-    {
-        printf("\tend\n");
-    }
-
-EXPR:
-    EXPR '+' EXPR { 
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tadd ax,bx\n");
-        printf("\tpush ax\n");
-    }
-  | EXPR '-' EXPR { 
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tsub ax,bx\n"); 
-        printf("\tpush ax\n");
-    }
-  | EXPR '*' EXPR { 
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tmul ax,bx\n");
-        printf("\tpush ax\n");
-    }
-  | EXPR '/' EXPR { 
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tdiv ax,bx\n");
-        printf("\tpush ax\n");
-    }
-  | INT           { 
-        printf("\tconst ax,%d\n", $1); 
-        printf("\tpush ax\n");
-    }
-  | ID            { 
-        printf("\tconst bx,%s\n", $1); 
-        printf("\tloadw ax,bx\n");    
-        printf("\tpush ax\n");
-    }
-  | '(' EXPR ')'  { printf("Expression parenthésée\n"); }
-
-  | EXPR '<' EXPR{
-        int lv = label_count++;
-        int lf = label_count++;
-        
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tuless ax,bx\n");
-       
-        /*Cas de figure numéro 1 c'est vrais alors on saute dans lv*/
-        printf("\tconst dx, %s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-        printf("\tjmpc dx\n"); 
-
-        /*Cas de figure numéro 2 c'est faux alors on saute dans lf*/
-        printf("\tconst ax, 0\n");
-        printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/ 
-        printf("\tjmp dx\n");
-
-
-        /*On créer les endroits de sauts*/
-
-        printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-        printf("\tconst ax, 1\n");
-
-        printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-        printf("\tpush ax\n");
-    }
-    | EXPR '>' EXPR{
-        int lv = label_count++;
-        int lf = label_count++;
-        
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tsless bx,ax\n");
-       
-        /*Cas de figure numéro 1 c'est vrais alors on saute dans lv*/
-        printf("\tconst dx,%s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-        printf("\tjmpc dx\n"); 
-
-        /*Cas de figure numéro 2 c'est faux alors on saute dans lf*/
-        printf("\tconst ax, 0\n");
-        printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/ 
-        printf("\tjmp dx\n");
-
-
-        /*On créer les endroits de sauts*/
-
-        printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-        printf("\tconst ax, 1\n");
-
-        printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-        printf("\tpush ax\n");
-    }
-
-    | EXPR '=' EXPR{
-        int lv = label_count++;
-        int lf = label_count++;
-        
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tcmp ax,bx\n");
-       
-        /*Cas de figure numéro 1 c'est vrais alors on saute dans lv*/
-        printf("\tconst dx, %s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-        printf("\tjmpc dx\n"); 
-
-        /*Cas de figure numéro 2 c'est faux alors on saute dans lf*/
-        printf("\tconst ax, 0\n");
-        printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/ 
-        printf("\tjmp dx\n");
-
-
-        /*On créer les endroits de sauts*/
-
-        printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-        printf("\tconst ax, 1\n");
-
-        printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-        printf("\tpush ax\n");
-    }
-    | EXPR SOE EXPR{
-            int lv = label_count++;
-            int lf = label_count++;
-            int lfin = label_count++;
-
-            printf("\tpop bx\n");
-            printf("\tpop ax\n");
-            printf("\tsless ax, bx\n");
-
-            /*Cas de figure numéro 1 c'est vrais alors on saute dans lf car c'est faux */
-            printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/
-            printf("\tjmpc dx\n");
-
-
-            /*Cas de figure numéro 2 c'est faux alors on saute dans lv*/
-            printf("\tconst dx,%s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-            printf("\tjmp dx\n");
-
-
-            printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-            printf("\tconst ax, 1\n");
-            printf("\tconst dx, %s%d\n", label_operateur, lfin);
-            printf("\tjmp dx");
-
-            printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-            printf("\tconst ax, 0\n");
-            printf("\tconst dx, %s%d\n", label_operateur, lfin);
-            printf("\tjmp dx");
-        
-
-            printf(":%s%d\n", label_operateur, lfin); /*Label de fin pour les deux cas*/
-            printf("\tpush ax\n");
-         }
-
-
-    | EXPR IOE EXPR{
-            int lv = label_count++;
-            int lf = label_count++;
-            int lfin = label_count++;
-
-            printf("\tpop bx\n");
-            printf("\tpop ax\n");
-            printf("\tluess ax, bx\n");
-
-            /*Cas de figure numéro 1 c'est vrais alors on saute dans lf car c'est faux */
-            printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/
-            printf("\tjmpc dx\n");
-
-
-            /*Cas de figure numéro 2 c'est faux alors on saute dans lv*/
-            printf("\tconst dx,%s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-            printf("\tjmp dx\n");
-
-
-            printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-            printf("\tconst ax, 1\n");
-            printf("\tconst dx, %s%d\n", label_operateur, lfin);
-            printf("\tjmp dx");
-
-            printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-            printf("\tconst ax, 0\n");
-            printf("\tconst dx, %s%d\n", label_operateur, lfin);
-            printf("\tjmp dx");
-        
-
-            printf(":%s%d\n", label_operateur, lfin); /*Label de fin pour les deux cas*/
-            printf("\tpush ax\n");
-         }
-
-  ;
-liste_param_call:
-    /* vide */                  
-    { 
-        $$ = 0; // 0 argument
-    }
-    | EXPR                      
-    { 
-        $$ = 1; // 1 argument
-        // EXPR a déjà généré le "push ax" tout seul ! L'argument est sur la pile.
-    }
-    | liste_param_call ',' EXPR 
-    { 
-        $$ = $1 + 1; // On incrémente le compteur d'arguments
-        // Le nouvel EXPR est empilé au-dessus du précédent.
-    }
-    ;
-
-
-appel_final:
-    CALL '{' ID '}' '{' liste_param_call '}'
+/* --- DOWHILE --- */
+struct_dowhile:
+    DOWHILE 
     {
         if (path == 1) {
-            // 1. Appel de l'algorithme (identique au CALL normal)
-            printf("\tconst dx, :%s\n", $3);
-            printf("\tcall dx\n");
+            int l_debut = ++label_count;
+            int l_fin = ++label_count;
+            $<integer>$ = (l_debut << 16) | (l_fin & 0xFFFF);
+            printf(":%s%d\n", label_dowhile, l_debut);
+        }
+    }
+    '{' EXPR '}' 
+    {
+        // --- SÉCURITÉ : La condition doit être booléenne ---
+        if ($4 != BOOL_T) {
+            fprintf(stderr, "Erreur sémantique : La condition du DOWHILE doit être booléenne.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        if (path == 1) {
+            int l_fin = $<integer>2 & 0xFFFF;
+            printf("\tpop ax\n");
+            printf("\tconst bx,0\n");
+            printf("\tconst dx,%s%d\n", label_dowhile, l_fin); // CONST AVANT CMP
+            printf("\tcmp ax,bx\n");
+            printf("\tjmpc dx\n"); 
+        }
+    }
+    liste_instructions OD
+    {
+        if (path == 1) {
+            int l_debut = ($<integer>2 >> 16) & 0xFFFF;
+            int l_fin = $<integer>2 & 0xFFFF;
             
-            // 2. Nettoyage des arguments
-            int nb_args = $6; 
-            for(int i = 0; i < nb_args; i++) {
-                printf("\tpop cx\n");
-            }
-            
-            // 3. Affichage du résultat final
-            // Le résultat est dans AX. SIPRO a besoin d'une adresse pour l'afficher.
-            // On le met sur la pile, on calcule son adresse, et on l'affiche !
-            printf("\tpush ax\n");         // On met le résultat sur la pile
-            printf("\tcp bx,sp\n");       // BX pointe sur le sommet de la pile
-            printf("\tconst cx,2\n");
-            printf("\tsub bx,cx\n");      // BX contient l'adresse exacte du résultat
-            printf("\tcallprintfd bx\n");  // Affiche l'entier signé à l'écran
-            printf("\tpop ax\n");          // On nettoie la pile
+            printf("\tconst dx,%s%d\n", label_dowhile, l_debut);
+            printf("\tjmp dx\n"); 
+            printf(":%s%d\n", label_dowhile, l_fin); 
         }
     }
     ;
 
-liste_valeurs:
-    /* vide */
-    | INT
-    | liste_valeurs ',' INT
+/* --- DOFORI --- */
+struct_dofori:
+    DOFORI '{' ID '}' '{' EXPR '}' 
+    {   
+        // --- SÉCURITÉ : Borne début doit être entière ---
+        if ($6 != INT_T) {
+            fprintf(stderr, "Erreur sémantique : La borne de début du DOFORI doit être un entier.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        Symbole *symb = rechercheExecutable($3);
+        if (symb == NULL) {
+            symb = ajouteIdentificateur($3, C_VARIABLE, INT_T, offset_courant);
+            offset_courant += 2;
+        } else if (symb->type != INT_T) {
+            fprintf(stderr, "Erreur sémantique : L'itérateur '%s' n'est pas un entier.\n", $3);
+            exit(EXIT_FAILURE);
+        }
+
+        if(path == 1) {
+            int l_debut = ++label_count; 
+            int l_fin = ++label_count;
+            $<integer>$ = (l_debut << 16) | (l_fin & 0xFFFF); 
+
+            printf("\tpop ax\n");                      
+            printf("\tcp bx,bp\n"); 
+            
+            // CORRECTION : Prise en charge des adresses négatives (arguments)
+            if (symb->adresse < 0) {
+                printf("\tconst cx,%d\n", -symb->adresse);
+                printf("\tsub bx,cx\n");
+            } else {
+                printf("\tconst cx,%d\n", symb->adresse); 
+                printf("\tadd bx,cx\n");                  
+            }
+            printf("\tstorew ax,bx\n");               
+            printf(":%s%d\n", label_dofori, l_debut);
+        }
+    }
+    '{' EXPR '}' 
+    {
+        // --- SÉCURITÉ : Borne fin doit être entière ---
+        if ($10 != INT_T) {
+            fprintf(stderr, "Erreur sémantique : La borne de fin du DOFORI doit être un entier.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        if (path == 1) {
+            int l_fin = $<integer>8 & 0xFFFF; 
+            Symbole *symb = rechercheExecutable($3);
+            
+            printf("\tpop bx\n"); 
+            printf("\tcp cx,bp\n"); 
+            
+            // CORRECTION
+            if (symb->adresse < 0) {
+                printf("\tconst dx,%d\n", -symb->adresse);
+                printf("\tsub cx,dx\n");
+            } else {
+                printf("\tconst dx,%d\n", symb->adresse); 
+                printf("\tadd cx,dx\n");      
+            }
+            printf("\tloadw ax,cx\n");    
+
+            printf("\tconst dx,%s%d\n", label_dofori, l_fin); // CONST AVANT SLESS
+            printf("\tsless bx,ax\n");    
+            printf("\tjmpc dx\n");         
+        }
+    }
+    liste_instructions OD
+    {
+        if (path == 1) {
+            int l_debut = ($<integer>8 >> 16) & 0xFFFF;
+            int l_fin = $<integer>8 & 0xFFFF;
+            Symbole *symb = rechercheExecutable($3);
+            
+            printf("\tcp cx,bp\n"); 
+            
+            // CORRECTION
+            if (symb->adresse < 0) {
+                printf("\tconst dx,%d\n", -symb->adresse);
+                printf("\tsub cx,dx\n");
+            } else {
+                printf("\tconst dx,%d\n", symb->adresse); 
+                printf("\tadd cx,dx\n");
+            }
+            printf("\tloadw ax,cx\n");    
+            printf("\tconst bx,1\n");
+            printf("\tadd ax,bx\n");      
+            printf("\tstorew ax,cx\n");   
+            
+            printf("\tconst dx,%s%d\n", label_dofori, l_debut);
+            printf("\tjmp dx\n");
+            printf(":%s%d\n", label_dofori, l_fin);
+        }
+    }
+    ;
+
+/* ========================================================================== */
+/* APPEL DE FONCTION ET EXPR                                                  */
+/* ========================================================================== */
+
+appel_final:
+    CALL '{' ID '}' '{' liste_param_call '}'
+    {
+        // --- SÉCURITÉ : Appel Final ---
+        Symbole *func_symb = rechercheExecutable($3);
+        if (func_symb == NULL || func_symb->classe != C_FONCTION) {
+            fprintf(stderr, "Erreur sémantique : La fonction '%s' n'existe pas.\n", $3);
+            exit(EXIT_FAILURE);
+        }
+        if (func_symb->nb_params != $6) {
+            fprintf(stderr, "Erreur : %d argument(s) attendu(s) pour '%s', %d fourni(s).\n", func_symb->nb_params, $3, $6);
+            exit(EXIT_FAILURE);
+        }
+
+        if (path == 1) {
+            printf("\tconst dx,%s\n", $3);
+            printf("\tcall dx\n");
+            
+            int nb_args = $6; 
+            for(int i = 0; i < nb_args; i++) {
+                printf("\tpop cx\n"); 
+            }
+            
+            printf("\tpush ax\n");         
+            printf("\tcp bx,sp\n");       
+            printf("\tcallprintfd bx\n");  
+            printf("\tpop ax\n");       
+        }
+    }
+    ;
+
+appel_proc:
+    CALL '{' ID '}' '{' liste_param_call '}'
+    {
+        // --- SÉCURITÉ : Appel Procédure ---
+        Symbole *func_symb = rechercheExecutable($3);
+        if (func_symb == NULL || func_symb->classe != C_FONCTION) {
+            fprintf(stderr, "Erreur sémantique : La fonction '%s' n'existe pas.\n", $3);
+            exit(EXIT_FAILURE);
+        }
+        if (func_symb->nb_params != $6) {
+            fprintf(stderr, "Erreur : %d argument(s) attendu(s) pour '%s', %d fourni(s).\n", func_symb->nb_params, $3, $6);
+            exit(EXIT_FAILURE);
+        }
+
+        if (path == 1) {
+            printf("\tconst dx,%s\n", $3);
+            printf("\tcall dx\n");
+            int nb_args = $6; 
+            for(int i = 0; i < nb_args; i++) printf("\tpop cx\n");
+        }
+    }
+    ;
+
+liste_param_call:
+    /* vide */ { $$ = 0; }
+    | EXPR { $$ = 1; }
+    | liste_param_call ',' EXPR { $$ = $1 + 1; }
+    ;
+
+EXPR:
+    INT 
+    { 
+        if(path == 1) {
+            printf("\tconst ax,%d\n", $1);
+            printf("\tpush ax\n");
+        }
+        $$ = INT_T; // Typage
+    }
+    | TRUE
+    {
+        if(path == 1) {
+            printf("\tconst ax,1\n");
+            printf("\tpush ax\n");
+        }
+        $$ = BOOL_T; // Typage
+    }
+    | FALSE
+    {
+        if(path == 1) {
+            printf("\tconst ax,0\n");
+            printf("\tpush ax\n");
+        }
+        $$ = BOOL_T; // Typage
+    }
+    | ID 
+    { 
+        // --- SÉCURITÉ : La variable doit exister ---
+        Symbole *symb = rechercheExecutable($1);
+        if (symb == NULL) {
+            fprintf(stderr, "Erreur sémantique : La variable '%s' est lue avant d'être affectée.\n", $1);
+            exit(EXIT_FAILURE);
+        }
+
+        $$ = symb->type; // On fait remonter le type
+
+        if (path == 1) {
+            printf("\tcp bx,bp\n");
+            if (symb->adresse < 0) {
+                printf("\tconst cx,%d\n", -symb->adresse);
+                printf("\tsub bx,cx\n");
+            } else {
+                printf("\tconst cx,%d\n", symb->adresse);
+                printf("\tadd bx,cx\n");
+            }
+            printf("\tloadw ax,bx\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | CALL '{' ID '}' '{' liste_param_call '}'
+    {
+        // --- SÉCURITÉ : Appel Fonction dans EXPR ---
+        Symbole *func_symb = rechercheExecutable($3);
+        if (func_symb == NULL || func_symb->classe != C_FONCTION) {
+            fprintf(stderr, "Erreur sémantique : La fonction '%s' n'existe pas.\n", $3);
+            exit(EXIT_FAILURE);
+        }
+        if (func_symb->nb_params != $6) {
+            fprintf(stderr, "Erreur : %d argument(s) attendu(s) pour '%s', %d fourni(s).\n", func_symb->nb_params, $3, $6);
+            exit(EXIT_FAILURE);
+        }
+
+        $$ = INT_T; // On assume que toutes les fonctions retournent des entiers (AlgoSIPRO)
+
+        if (path == 1) {
+            printf("\tconst dx,%s\n", $3);
+            printf("\tcall dx\n");
+            
+            int nb_args = $6; 
+            for(int i = 0; i < nb_args; i++) {
+                printf("\tpop cx\n");
+            }
+            printf("\tpush ax\n"); 
+        }
+    }
+    | EXPR '+' EXPR 
+    {   
+        // --- SÉCURITÉ MATHÉMATIQUE ---
+        if ($1 != INT_T || $3 != INT_T) {
+            fprintf(stderr, "Erreur de typage : L'addition requiert deux entiers.\n");
+            exit(EXIT_FAILURE);
+        }
+        $$ = INT_T;
+
+        if(path == 1) {
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tadd ax,bx\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR '-' EXPR 
+    {
+        if ($1 != INT_T || $3 != INT_T) {
+            fprintf(stderr, "Erreur de typage : La soustraction requiert deux entiers.\n");
+            exit(EXIT_FAILURE);
+        }
+        $$ = INT_T;
+
+        if(path == 1) {
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tsub ax,bx\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR '*' EXPR 
+    {
+        if ($1 != INT_T || $3 != INT_T) {
+            fprintf(stderr, "Erreur de typage : La multiplication requiert deux entiers.\n");
+            exit(EXIT_FAILURE);
+        }
+        $$ = INT_T;
+
+        if(path == 1) {
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tmul ax,bx\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR '/' EXPR 
+    {
+        if ($1 != INT_T || $3 != INT_T) {
+            fprintf(stderr, "Erreur de typage : La division requiert deux entiers.\n");
+            exit(EXIT_FAILURE);
+        }
+        $$ = INT_T;
+
+        if(path == 1) {
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tdiv ax,bx\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR '<' EXPR 
+    {
+        if ($1 != INT_T || $3 != INT_T) {
+            fprintf(stderr, "Erreur de typage : Les comparaisons de grandeurs requièrent deux entiers.\n");
+            exit(EXIT_FAILURE);
+        }
+        $$ = BOOL_T;
+
+        if(path ==1){
+            int lv = label_count++;
+            int lf = label_count++;
+            
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lv); // AVANT SLESS
+            printf("\tsless ax,bx\n"); // CORRECTION: sless au lieu de uless
+            printf("\tjmpc dx\n"); 
+
+            printf("\tconst ax,0\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lf);  
+            printf("\tjmp dx\n");
+
+            printf(":%s%d\n", label_operateur, lv); 
+            printf("\tconst ax,1\n");
+
+            printf(":%s%d\n", label_operateur, lf); 
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR '>' EXPR 
+    {
+        if ($1 != INT_T || $3 != INT_T) {
+            fprintf(stderr, "Erreur de typage : Les comparaisons de grandeurs requièrent deux entiers.\n");
+            exit(EXIT_FAILURE);
+        }
+        $$ = BOOL_T;
+
+        if(path == 1){
+            int lv = label_count++;
+            int lf = label_count++;
+            
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lv); // AVANT SLESS
+            printf("\tsless bx,ax\n"); 
+            printf("\tjmpc dx\n"); 
+
+            printf("\tconst ax,0\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lf);  
+            printf("\tjmp dx\n");
+
+            printf(":%s%d\n", label_operateur, lv); 
+            printf("\tconst ax,1\n");
+
+            printf(":%s%d\n", label_operateur, lf); 
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR '=' EXPR 
+    {
+        if ($1 != $3) {
+            fprintf(stderr, "Erreur de typage : L'égalité requiert deux éléments du même type.\n");
+            exit(EXIT_FAILURE);
+        }
+        $$ = BOOL_T;
+
+        if(path ==1){
+            int lv = label_count++;
+            int lf = label_count++;
+            
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lv); // AVANT CMP
+            printf("\tcmp ax,bx\n");
+            printf("\tjmpc dx\n"); 
+
+            printf("\tconst ax,0\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lf);  
+            printf("\tjmp dx\n");
+
+            printf(":%s%d\n", label_operateur, lv); 
+            printf("\tconst ax,1\n");
+
+            printf(":%s%d\n", label_operateur, lf); 
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR SOE EXPR 
+    { 
+        if ($1 != INT_T || $3 != INT_T) {
+            fprintf(stderr, "Erreur de typage : Les comparaisons de grandeurs requièrent deux entiers.\n");
+            exit(EXIT_FAILURE);
+        }
+        $$ = BOOL_T;
+
+        if(path == 1){
+            int lv = label_count++;
+            int lf = label_count++;
+            int lfin = label_count++;
+
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            
+            // CORRECTION : Ordre inversé, const dx préparé pour FAUX (lf)
+            printf("\tconst dx,%s%d\n", label_operateur, lf); 
+            printf("\tsless bx,ax\n"); 
+            printf("\tjmpc dx\n"); 
+            
+            // Sinon (ax <= bx), c'est VRAI
+            printf("\tconst dx,%s%d\n", label_operateur, lv);
+            printf("\tjmp dx\n");
+            
+            printf(":%s%d\n", label_operateur, lv); // Cas VRAI
+            printf("\tconst ax,1\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lfin);
+            printf("\tjmp dx\n");
+
+            printf(":%s%d\n", label_operateur, lf); // Cas FAUX
+            printf("\tconst ax,0\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lfin);
+            printf("\tjmp dx\n");
+        
+            printf(":%s%d\n", label_operateur, lfin); 
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR IOE EXPR 
+    {
+        if ($1 != INT_T || $3 != INT_T) {
+            fprintf(stderr, "Erreur de typage : Les comparaisons de grandeurs requièrent deux entiers.\n");
+            exit(EXIT_FAILURE);
+        }
+        $$ = BOOL_T;
+
+        if(path == 1){
+            int lv = label_count++;
+            int lf = label_count++;
+            int lfin = label_count++;
+
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            
+            // CORRECTION : sless et const dx en ordre
+            printf("\tconst dx,%s%d\n", label_operateur, lf);
+            printf("\tsless ax,bx\n"); // CORRECTION: sless au lieu de uless
+            printf("\tjmpc dx\n");
+
+            printf("\tconst dx,%s%d\n", label_operateur, lv); 
+            printf("\tjmp dx\n");
+
+            printf(":%s%d\n", label_operateur, lv); 
+            printf("\tconst ax,1\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lfin);
+            printf("\tjmp dx\n");
+
+            printf(":%s%d\n", label_operateur, lf); 
+            printf("\tconst ax,0\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lfin);
+            printf("\tjmp dx\n");
+        
+            printf(":%s%d\n", label_operateur, lfin); 
+            printf("\tpush ax\n");
+        }
+    }
     ;
 
 %%
 
 void yyerror(char const *s) {
-    fprintf(stderr, "Erreur syntaxique : %s\n", s);
+    fprintf(stderr, "Erreur de syntaxe : %s\n", s);
 }
 
-int main() {
-    printf("Début de la compilation...\n");
-    if(yyparse() == 0){
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s fichier.algo\n", argv[0]);
         return EXIT_FAILURE;
     }
-    path++;
-    yyparse();
-    printf("Compilation terminée sans erreur syntaxique !\n");
+
+    yyin = fopen(argv[1], "r");
+    if (!yyin) {
+        perror("Erreur d'ouverture du fichier");
+        return EXIT_FAILURE;
+    }
+
+    // --- PASSE 1 : Construction de la table et des offsets ---
+    path = 0;
+    initDico(); 
+    if (yyparse() != 0) {
+        fclose(yyin);
+        return EXIT_FAILURE;
+    }
+
+   // --- ON REVIENT AU DÉBUT DU FICHIER ---
+    rewind(yyin); 
+    yyrestart(yyin); // <--- LA LIGNE MAGIQUE POUR SAUVER LA PASSE 2 !
+
+    // --- PASSE 2 : Génération de l'assembleur SIPRO ---
+    path = 1;
+    
+    // Initialisation : On place la pile à 10000 et ON SAUTE AU DÉBUT
+    printf("\tconst ax,pile\n");          
+    printf("\tcp bp,ax\n");                 
+    printf("\tcp sp,ax\n");
+    printf("\tconst ax,debut_programme\n"); 
+    printf("\tjmp ax\n\n");                 
+   
+    if (yyparse() != 0) {
+        fclose(yyin);
+        return EXIT_FAILURE;
+    }
+
+    printf("\tend\n");
+    printf(":pile\n");     
+    printf("@int 0\n");
+    
+    fclose(yyin);
     return EXIT_SUCCESS;
-    //rewind entre les deux path pour repartir au début du fichier lors de la 2e passe
 }

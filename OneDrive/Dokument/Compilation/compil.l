@@ -2,7 +2,7 @@
   #include <stdlib.h>
   #include <stdio.h>
   #include <errno.h>
-  //#include "type.h"
+  #include "type.h"
   #include <limits.h>
   #include "compil.tab.h"
   void string_to_int(int *r, const char *s);
@@ -20,7 +20,6 @@
 "\\SET" {return SET;}
 "\\IF"  {return IF;}
 "\\ELSE" {return ELSE;}
-"\\ELSEIF" {return ELSEIF;}
 "\\DOWHILE" {return DOWHILE;}
 "\\DOFORI" {return DOFORI;}
 "\\CALL" {return CALL;}
@@ -30,17 +29,22 @@
 "\\FI" {return FI;}
 
 
- /*TOKENS VU EN TP*/
-0|[1-9][0-9]*   { string_to_int(&yylval.integer, yytext); return INT; }
+ /* TOKENS VU EN TP */
+0|[1-9][0-9]* { string_to_int(&yylval.integer, yytext); return INT; }
+
+ /* Les booléens doivent être AVANT les ID ! */
+"true"          { return TRUE; }
+"false"         { return FALSE; }
+
+ /* La règle générique des ID */
 [a-zA-Z][a-zA-Z0-9]* { yytext_copy(&yylval.str, yytext); return ID; }
+
 "+"|"-"|"*"|"/"|"{"|"}"|","|"("|")"|"="|"<"|">" { return yytext[0]; }
-"<=" { return SOE; }
-">=" { return IOE; }
-"true" { return TRUE; }
-"false" { return FALSE; }
+"<="            { return SOE; }
+">="            { return IOE; }
+
 [[:blank:]]     {}
-.               {fprintf(stderr, "Bad character: %c\n", yytext[0]);
-                 yyterminate();}
+.               {fprintf(stderr, "Bad character: %c\n", yytext[0]); yyterminate();}
 \n              {}
 
 %%

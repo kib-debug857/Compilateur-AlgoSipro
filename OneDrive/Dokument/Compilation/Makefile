@@ -14,8 +14,13 @@ YACCOPTS=
 
 PROG=compil
 
-$(PROG): lex.yy.o $(PROG).tab.o
+# --- C'EST ICI QUE CA CHANGE : Ajout de symbole.o ---
+$(PROG): lex.yy.o $(PROG).tab.o symbole.o
 	$(CC) $+ -o $@ $(LDFLAGS) 
+
+# --- Règle pour la table des symboles ---
+symbole.o: symbole.c symbole.h
+	$(CC) $(CFLAGS) $(OPT) $< -c
 
 lex.yy.c: $(PROG).l $(PROG).tab.h
 	$(LEX) $(LEXOPTS) $<
@@ -31,5 +36,6 @@ $(PROG).tab.c $(PROG).tab.h: $(PROG).y lex.yy.h
 
 clean:
 	touch $(PROG).output $(PROG).vcg
-	rm $(PROG) *.o *.output *.vcg 
-	rm lex.yy.* $(PROG).tab.*  
+	rm -f $(PROG) *.o *.output *.vcg 
+	rm -f lex.yy.* $(PROG).tab.*
+

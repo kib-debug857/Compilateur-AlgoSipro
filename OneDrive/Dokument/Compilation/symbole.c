@@ -7,7 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "table_symboles.h"
+#include "symbole.h"
 
 // ============================================================================
 // VARIABLES GLOBALES PRIVÉES (Encapsulation)
@@ -101,6 +101,8 @@ Symbole* ajouteIdentificateur(char *nom, int classe, type_t type, int adresse) {
     contexte_courant->symboles[index].classe = classe;
     contexte_courant->symboles[index].type = type;
     contexte_courant->symboles[index].adresse = adresse;
+    contexte_courant->symboles[index].nb_params = 0;
+    
     
     contexte_courant->nb_symboles++;
     
@@ -134,4 +136,12 @@ Symbole* rechercheDeclarative(char *nom) {
     }
     
     return NULL; // Voie libre
+}
+void fixerOffsetsArguments(int nb_args) {
+    // Les arguments sont toujours les premiers symboles ajoutés dans le contexte
+    for (int i = 0; i < nb_args; i++) {
+        // Le dernier argument (index nb_args - 1) est à BP - 4
+        // L'avant-dernier est à BP - 6, etc.
+        contexte_courant->symboles[i].adresse = -4 - ((nb_args - 1 - i) * 2);
+    }
 }
