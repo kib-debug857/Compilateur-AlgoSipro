@@ -18,5 +18,6 @@ Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement
 
 | Etape| Code|
 | :--- | :--- |
-| Info 1 | Info 2 |
-| Info 3 | Info 4 |
+| 1.Compilation | ```bash ./compil test.algo > test.asm```  |
+| 2.Assemblage | Info 4 |
+| 2.Exécution | Info 4 |
