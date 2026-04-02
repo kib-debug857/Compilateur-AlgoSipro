@@ -8,11 +8,14 @@
   - \IF && \ELSE
     - Il est possible d'écrire une condition simple avec un simple IF comme une condition complexe avec un IF/ELSE.
   - \DOWHILE
-    -   
+    -   Il est possible d'imbriqué plusieurs boucles entre elles (dofori && dowhile)
   - \DOFORI
   - \CALL
+    - Gére le cas des appeles récurssif et des appeles d'autre fonctions   
   - \RETURN
+    - Retourne forcément un entier, nous n'avons pas implémenté la fonctionnalité de déduire la valeur de retour en fonction des paramètres   
 
+<H2>La table des symboles</H2>
 
 <H2>Guide d'Exécution</H2>
 
@@ -30,3 +33,5 @@ Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement
 | 1.Compilation | ```bash ./compil test.algo > test.asm```  |Traduit le code Argo en assembleur SIPRO.|
 | 2.Assemblage | ```bash asipro test.asm test.sipro```|Génère le fichier binaire exécutable.|
 | 2.Exécution | ```bash sipro test.sipro ``` |Lance l'émulateur et affiche le résultat final.|
+
+
