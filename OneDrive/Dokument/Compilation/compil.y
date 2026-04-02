@@ -13,7 +13,6 @@ extern void yyrestart(FILE *input_file);
 // --- VARIABLES GLOBALES POUR LA GÉNÉRATION DE CODE ---
 int label_count = 0;
 int path = 0; 
-
 // Gestion de la mémoire de la machine SIPRO
 int offset_courant = 2; 
 int memoire_locales[100]; 
@@ -33,6 +32,7 @@ int index_algo_p2 = 0;
     char* str;
     type_t type_expr; // <-- NOUVEAU : Transport du type
 }
+/* La suite de ton code avec les %token ... */
 
 /* Les tokens envoyés par Flex */
 %token BEGIN_ALGO END_ALGO SET IF ELSE DOWHILE DOFORI CALL RETURN OD FI
@@ -541,11 +541,12 @@ EXPR:
             exit(EXIT_FAILURE);
         }
         $$ = INT_T;
-
         if(path == 1) {
             printf("\tpop bx\n");
             printf("\tpop ax\n");
+            printf("\tconst dx,erreur_add_mul\n");
             printf("\tadd ax,bx\n");
+            printf("\tjmpe dx\n");
             printf("\tpush ax\n");
         }
     }
@@ -575,7 +576,9 @@ EXPR:
         if(path == 1) {
             printf("\tpop bx\n");
             printf("\tpop ax\n");
+            printf("\tconst dx,erreur_add_mul\n");
             printf("\tmul ax,bx\n");
+            printf("\tjmpe dx\n");
             printf("\tpush ax\n");
         }
     }
@@ -590,18 +593,19 @@ EXPR:
         if(path == 1) {
             printf("\tpop bx\n");
             printf("\tpop ax\n");
+            printf("\tconst dx,erreur_div0\n");
             printf("\tdiv ax,bx\n");
+            printf("\tjmpe dx\n");
             printf("\tpush ax\n");
         }
     }
-    | EXPR '<' EXPR 
-    {
+   |EXPR '<' EXPR{
+
         if ($1 != INT_T || $3 != INT_T) {
             fprintf(stderr, "Erreur de typage : Les comparaisons de grandeurs requièrent deux entiers.\n");
             exit(EXIT_FAILURE);
         }
         $$ = BOOL_T;
-
         if(path ==1){
             int lv = label_count++;
             int lf = label_count++;
@@ -806,6 +810,27 @@ int main(int argc, char **argv) {
     }
 
     printf("\tend\n");
+
+    //Gestion des erreurs 
+    printf(":erreur_div0\n");
+    printf("\tconst ax,msg_div0\n");
+    printf("\tcallprintfs ax\n"); // Affiche le message d'erreur 
+    printf("\tend\n");
+
+    printf(":erreur_add_mul\n");
+    printf("\tconst ax,msg_add_mul\n");
+    printf("\tcallprintfs ax\n"); // Affiche le message d'erreur 
+    printf("\tend\n");
+
+
+    //Gestion des messages d'erreurs 
+    printf(":msg_div0\n");
+    printf("@string \"Erreur fatale : Division par zero !\\n\"\n");
+
+    printf(":msg_add_mul\n");
+    printf("@string \"Erreur fatale : entier trop grand!\\n\"\n");
+
+
     printf(":pile\n");     
     printf("@int 0\n");
     
