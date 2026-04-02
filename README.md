@@ -6,3 +6,7 @@
 
 
 <H2>Exécution du projet</H2>
+
+**Condition**
+Pour compiler il vous faut avoir installer sur votre machine le compilateur Sipro ainsi qu'Asipro. 
+1.Make Clean && Make
