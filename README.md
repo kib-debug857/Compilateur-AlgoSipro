@@ -8,6 +8,8 @@
 <H2>Guide d'Exécution</H2>
 
 **Prérequis matériels**
+Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement SIPRO sur votre machine :
 
-Pour compiler il vous faut avoir installer sur votre machine le compilateur Sipro ainsi qu'Asipro. 
-1.Make Clean && Make
++asipro : L'assembleur pour transformer votre code .asm en binaire.
++sipro : L'émulateur (processeur virtuel 16 bits) pour exécuter le programme final.
++Flex & Bison : Pour la génération de l'analyseur lexical et syntaxique.
