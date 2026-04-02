@@ -16,8 +16,8 @@ Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement
 - Flex & Bison : Pour la génération de l'analyseur lexical et syntaxique.
 
 
-| Etape| Code|
-| :--- | :--- |
-| 1.Compilation | ```bash ./compil test.algo > test.asm```  |
-| 2.Assemblage | Info 4 |
-| 2.Exécution | Info 4 |
+| Etape| Code| Description|
+| :--- | :--- | :---|
+| 1.Compilation | ```bash ./compil test.algo > test.asm```  |Traduit le code Argo en assembleur SIPRO.|
+| 2.Assemblage | ```bash asipro test.asm test.sipro```|Génère le fichier binaire exécutable.|
+| 2.Exécution | ```bash sipro test.sipro ``` |Lance l'émulateur et affiche le résultat final.|
