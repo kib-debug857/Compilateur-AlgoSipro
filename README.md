@@ -2,7 +2,8 @@
 
 <H2>Les fonctionnalités implémentées</H2>
 
-
+- Les commandes utilisables :
+* eeee
 
 
 <H2>Guide d'Exécution</H2>
