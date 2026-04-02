@@ -16,6 +16,7 @@ Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement
 - Flex & Bison : Pour la génération de l'analyseur lexical et syntaxique.
 
 
-| Etape| Code|| :--- | :--- |
+| Etape| Code|
+| :--- | :--- |
 | Info 1 | Info 2 |
 | Info 3 | Info 4 |
