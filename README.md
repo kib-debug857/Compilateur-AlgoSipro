@@ -4,8 +4,11 @@
 
 - Les commandes utilisables :
   - \SET
+      - Pour affecter une valeur à une variable il faut concerver le type de celle ci (un Entier restera un Entier).
   - \IF && \ELSE
+    - Il est possible d'écrire une condition simple avec un simple IF comme une condition complexe avec un IF/ELSE.
   - \DOWHILE
+    -   
   - \DOFORI
   - \CALL
   - \RETURN
