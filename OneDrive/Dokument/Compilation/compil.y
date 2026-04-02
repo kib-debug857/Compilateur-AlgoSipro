@@ -2,255 +2,222 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <symbole.c>
-#include <symbole.h>
+#include "symbole.h" // Ta table des symboles
 
 int yylex();
 void yyerror(char const *s);
-int label_count = 0;
-%}
+extern FILE *yyin;
+extern void yyrestart(FILE *input_file); // <--- AJOUTE CETTE LIGNE ICI !
 
-/*Définition des labels utilisé pour les structures de contrôle*/
-%define int label_count 0
-%define label_dowhile "dowhile_label_"
-%define label_dofori "dofori_label_"
-%define label_if "if_label_"
-%define label_else "else_label_"
-%define label_operateur "operateur_label_"
-int path = 0; /* Variable pour récupérer les paramètres et les variables locales*/
+// --- VARIABLES GLOBALES POUR LA GÉNÉRATION DE CODE ---
+int label_count = 0;
+int path = 0; 
+/*  */
+// Gestion de la mémoire de la machine SIPRO
+int offset_courant = 2; 
+int memoire_locales[100]; 
+int index_algo_p1 = 0;    
+int index_algo_p2 = 0;    
+
+/* DÉFINITION DES LABELS POUR L'ASSEMBLEUR (Ce sont des #define du C !) */
+#define label_dowhile "dowhile_label_"
+#define label_dofori "dofori_label_"
+#define label_if "if_label_"
+#define label_else "else_label_"
+#define label_operateur "operateur_label_"
+%}
 
 %union {
     int integer;
     char* str;
 }
+/* La suite de ton code avec les %token ... */
 
 /* Les tokens envoyés par Flex */
-%token BEGIN_ALGO END_ALGO SET IF ELSE ELSEIF DOWHILE DOFORI CALL RETURN OD FI
+%token BEGIN_ALGO END_ALGO SET IF ELSE DOWHILE DOFORI CALL RETURN OD FI
 %token <integer> INT
 %token <str> ID
-%type <integer> si_cond 
-%type <integer> liste_param_call
+%token TRUE FALSE
+
+/* Types pour les règles qui remontent des valeurs */
+%type <integer> liste_arguments liste_param_call 
+
 /* Priorités mathématiques */
 %left '<' '>' '=' SOE IOE
 %left '+' '-'
 %left '*' '/'
 
-/*Les booleans*/
-%token TRUE FALSE
-
-/* Le token de départ */
-
 %start programme
 
 %%
 
+/* ========================================================================== */
+/* STRUCTURE GLOBALE DU PROGRAMME                                             */
+/* ========================================================================== */
+
 programme:
-    algorithme appel_final
+    liste_algorithmes 
+    {
+        if (path == 1) {
+            printf(":debut_programme\n"); // L'étiquette est placée avant les PUSH !
+        }
+    }
+    appel_final
     ;
 
+liste_algorithmes:
+    algorithme
+    | liste_algorithmes algorithme
+    ;
+
+/* ========================================================================== */
+/* DÉFINITION D'UN ALGORITHME (Le Contrat Appelé)                             */
+/* ========================================================================== */
+
 algorithme:
-    BEGIN_ALGO '{' ID '}' 
+    BEGIN_ALGO '{' ID '}' '{' 
     {
-        // PASSAGE 1 : Enregistrement de la fonction
-        if (path == 0) {
-            ajouteIdentificateur($3, C_FONCTION, UNDEF_T, 0); 
-        }
+            entreeFonction();   // Nouveau contexte
+            offset_courant = 2; // On réinitialise l'offset pour les variables locales
         
-        entreeFonction(); // On ouvre le contexte local (Passage 1 ET 2)
-        
-        // Initialisation des compteurs d'offsets
-        current_arg_offset = -4;  // Le 1er argument sera à bp - 4
-        current_local_offset = 2; // La 1ère variable locale sera à bp + 2
     }
-    '{' liste_arguments '}' 
+    liste_arguments '}' 
     {
-        // PASSAGE 2 : On génère le prologue de la fonction
-        if (path == 1) {
-            printf(":%s\n", $3);             // Label de l'algorithme
+      
+        fixerOffsetsArguments($7); // $7 est le nombre d'arguments
+        if(path == 1){
+            // PROLOGUE
+            printf(":%s\n", $3);             // Label de la fonction
+            printf("\tpush bp\n");           // Sauvegarde l'ancien BP
+            printf("\tcp bp,sp\n");         // Nouveau BP
             
-            // 1. Mise en place du Cadre d'Appel (Stack Frame)
-            printf("\tpush bp\n");           // Sauvegarde de l'ancien bp
-            printf("\tcp bp, sp\n");         // Le nouveau bp pointe au sommet actuel de la pile
-            
-            // 2. Réservation de l'espace pour les variables locales
-            // Au passage 2, current_local_offset contient la valeur finale calculée au passage 1
-            int nb_vars = (current_local_offset - 2) / 2; 
-            
-            if (nb_vars > 0) {
-                printf("\tconst ax, 0\n");
-                for(int i = 0; i < nb_vars; i++) {
-                    printf("\tpush ax\n");   // On empile des zéros pour allouer l'espace
-                }
+            int espace = memoire_locales[index_algo_p2];
+            if (espace > 0) {
+                printf("\tconst cx,%d\n", espace);
+                printf("\tadd sp,cx\n");    // Alloue l'espace pour les variables locales
             }
+            index_algo_p2++;
         }
     }
     liste_instructions 
     END_ALGO
-    {
-        // PASSAGE 2 : L'épilogue (Nettoyage avant de retourner)
-        if (path == 1) {
-            // 1. On détruit les variables locales en redescendant sp à bp
-            printf("\tcp sp, bp\n"); 
+    { 
+        if (path == 0) {
+            // Fin de passe 1 : On sauvegarde la taille totale des variables locales
+            memoire_locales[index_algo_p1] = offset_courant - 2;
+            index_algo_p1++;
             
-            // 2. On restaure le bp de la fonction qui nous a appelé
-            printf("\tpop bp\n");    
-            
-            // 3. L'instruction ret dépile l'adresse de retour (mise par le call) et saute [cite: 338, 339]
-            printf("\tret\n");       
+        } else {
+            // ÉPILOGUE de sécurité (si pas de RETURN explicite)
+            printf("\tcp sp,bp\n");
+            printf("\tpop bp\n");
+            printf("\tret\n");
         }
-        
-        // On ferme la boîte dans la table des symboles (Passage 1 ET 2)
-        sortieFonction(); 
+        sortieFonction(); // Ferme le contexte
     }
     ;
 
 liste_arguments:
-    /* vide */
-    | ID
+    /* vide */ { $$ = 0; }
+    | ID 
+    {
+        ajouteIdentificateur($1, C_ARGUMENT, INT_T, 0); 
+        $$ = 1;
+    }
     | liste_arguments ',' ID
+    {
+        ajouteIdentificateur($3, C_ARGUMENT, INT_T, 0);
+        $$ = $1 + 1; 
+    }
     ;
 
+/* ========================================================================== */
+/* INSTRUCTIONS                                                               */
+/* ========================================================================== */
+
 liste_instructions:
-    /* vide */
-    | liste_instructions instruction  
+    instruction
+    | liste_instructions instruction
     ;
 
 instruction:
     affectation
-    /* On ajoutera les autres instructions ici plus tard */
-    |struct_dowhile
-    |struct_dofori
-    |struct_if
-    |struct_return
-    |appel_final
-    |struct_end
+    | struct_if
+    | struct_dowhile
+    | struct_dofori
+    | struct_return
+    | appel_proc // Pour un CALL utilisé sans récupérer la valeur
     ;
 
 affectation:
-    SET '{' ID '}' '{' EXPR '}'{
-
-        if (path == 0) {
-            // PASSAGE 1 : On gère la table des symboles
-            Symbole* s = rechercheDeclarative($3);
-            if (s == NULL) {
-                ajouteIdentificateur($3, C_VARIABLE, INT_T, current_local_offset);
-                current_local_offset += 2; 
+    SET '{' ID '}' '{' EXPR '}' 
+    {
+        // Dans les 2 passes, on ajoute la variable si elle n'existe pas encore !
+        Symbole *symb = rechercheExecutable($3);
+        if (symb == NULL) {
+            symb = ajouteIdentificateur($3, C_VARIABLE, INT_T, offset_courant);
+            offset_courant += 2; 
+        }
+        
+        // Uniquement en Passe 2 pour l'assembleur
+        if (path == 1) {
+            printf("\tpop ax\n");                      
+            printf("\tcp bx,bp\n"); 
+            if (symb->adresse < 0) {
+                printf("\tconst cx,%d\n", -symb->adresse); // On prend la valeur positive
+                printf("\tsub bx,cx\n");                   // On soustrait !
+            } else {
+                printf("\tconst cx,%d\n", symb->adresse);
+                printf("\tadd bx,cx\n");                   // On additionne
             }
-        } 
-        else if (path == 1) {
-            // PASSAGE 2 : On écrit l'assembleur
-            Symbole* s = rechercheExecutable($3);
-            if (s == NULL) {
-                fprintf(stderr, "Erreur : La variable '%s' n'existe pas.\n", $3);
-                exit(EXIT_FAILURE);
-            }
+            printf("\tstorew ax,bx\n");               
+        }
+     }
+    ;
 
-            int offset = s->adresse; 
-
-            printf("\tpop ax\n"); 
-            printf("\tcp bx, bp\n");          
-            printf("\tconst cx, %d\n", offset); 
-            printf("\tadd bx, cx\n");         
-            printf("\tstorew ax, bx\n");      
+struct_return:
+    RETURN '{' EXPR '}' 
+    {
+        if (path == 1) {
+            printf("\tpop ax\n");      // Résultat dans AX
+            printf("\tcp sp,bp\n");   // Désallocation des locales
+            printf("\tpop bp\n");      // Restauration du contexte
+            printf("\tret\n");         // Retour à l'appelant
         }
     }
-
-struct_dowhile:
-    DOWHILE
-    /*D'apport je commence par définir mon point d'encrage c'est la que je vais revenir à chaque tour de boucle gestion du while  */
-    {
-        label_count++;
-        printf("\t:%s%d\n", label_dowhile, label_count);
-        $<integer>$ = label_count; /* Stocke le numéro de label pour ce DO-WHILE */
-    } 
-    liste_instructions
-    '{'EXPR'}' OD
-    {
-        /*Dans l'odre il faut récupérer le résultat de l'expression puis faire le test avec la boucle et si il est vrai retourner au point d'encrage sinon sortir de la boucle */
-        printf("\tpop ax\n"); /* Récupère le résultat de l'expression */
-        printf("\tconst bx,1\n"); /* définit en dur la valeur 1 pour la comparaison dans le registre bx */
-        printf("\tcmp ax,bx\n"); /* Compare le résultat de l'expression avec 1 si les deux sont à 1 alors on continue sinon cela veut dire que ax n'est pas vrai */
-
-        print("\tconst dx,%s%d\n", label_dowhile, $<integer>$); /* Définit le label de saut pour la boucle DO-WHILE dans le registre dx*/
-        printf("\tjmpc dx\n"); /* Si l'expression est vraie, retourne au point d'encrage */
-    }
     ;
 
-struct_dofori:
-    DOFORI '{' ID '}' '{' EXPR '}' 
-    //On commence par créer le point d'encrage de la boucle fori
-    {   
-        int l_debut = label_count++;
-        int l_fin = label_count++;
-        
-        printf("\tpop ax\n"); 
-        printf("\tconst bx, %s\n", $3); 
-        printf("\tstorew ax, bx\n");   // On range la valeur de départ dans ax 
-
-    }
-    '{' EXPR '}' 
-    {
-        printf("\t:%s%d\n", label_dofori, l_debut);
-
-        printf("\tpop ax\n");
-        printf("\tconst bx,%s\n",$9);
-        printf("\tsless ax,bx\n");
-
-        /*Retour au début label*/
-        printf("\tconst dx,%s%d\n",label_dofori,l_debut);
-        printf("\tjumpc dx\n");
-
-
-        /*Fin de la boucle*/
-        printf("\tconst dx,%s%d\n", label_dofori, l_fin);
-        printf("\tjmp dx\n");
-
-
-    }liste_instructions OD
-    {
-
-    }
-    ;
-    
+/* --- IF / ELSE --- */
 struct_if:
     IF '{' EXPR '}' 
     {   
         if (path == 1) {
             int l_sinon = ++label_count;
             int l_fin = ++label_count;
-
             $<integer>$ = (l_sinon << 16) | (l_fin & 0xFFFF);
             
-            // Évaluation
             printf("\tpop ax\n");          
             printf("\tconst bx,0\n");     
-            printf("\tcmp ax,bx\n");      
-
-            // Saut au ELSE si Faux
             printf("\tconst dx,%s%d\n", label_else, l_sinon);
+            printf("\tcmp ax,bx\n");      
             printf("\tjmpc dx\n");        
         }
     }
     liste_instructions 
     {
         if (path == 1) {
-            int l_sinon = ($<integer>4 >> 16) & 0xFFFF;
-            int l_fin = $<integer>4 & 0xFFFF;
+            int l_sinon = ($<integer>5 >> 16) & 0xFFFF;
+            int l_fin = $<integer>5 & 0xFFFF;
             
-            // Le IF est fini, on saute tout à la fin
             printf("\tconst dx,%s%d\n", label_if, l_fin);
             printf("\tjmp dx\n");          
-            
-            // On pose la cible pour le ELSE
             printf(":%s%d\n", label_else, l_sinon);
         }
     }
-    suite_if FI // <-- N'oublie pas le FI ici, ET l'Action 3 en dessous !
+    suite_if FI 
     {
         if (path == 1) {
-            int l_fin = $<integer>4 & 0xFFFF;
-            
-            // Le point de chute final pour tout le monde !
+            int l_fin = $<integer>5 & 0xFFFF;
             printf(":%s%d\n", label_if, l_fin);
         }
     }
@@ -259,274 +226,474 @@ struct_if:
 suite_if:
     /* vide */  
     | ELSE liste_instructions 
-    /* RIEN À AJOUTER ICI ! La liste_instructions se gère toute seule. */
     ;
 
-struct_return :
-    RETURN '{' EXPR '}' 
+/* --- DOWHILE --- */
+struct_dowhile:
+    DOWHILE 
     {
-        printf("\tpop ax\n");
+        if (path == 1) {
+            int l_debut = ++label_count;
+            int l_fin = ++label_count;
+            $<integer>$ = (l_debut << 16) | (l_fin & 0xFFFF);
+            
+            printf(":%s%d\n", label_dowhile, l_debut);
+        }
     }
-
-struct_end :
-    END_ALGO 
+    '{' EXPR '}' 
     {
-        printf("\tend\n");
-    }
-
-EXPR:
-    EXPR '+' EXPR { 
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tadd ax,bx\n");
-        printf("\tpush ax\n");
-    }
-  | EXPR '-' EXPR { 
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tsub ax,bx\n"); 
-        printf("\tpush ax\n");
-    }
-  | EXPR '*' EXPR { 
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tmul ax,bx\n");
-        printf("\tpush ax\n");
-    }
-  | EXPR '/' EXPR { 
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tdiv ax,bx\n");
-        printf("\tpush ax\n");
-    }
-  | INT           { 
-        printf("\tconst ax,%d\n", $1); 
-        printf("\tpush ax\n");
-    }
-  | ID            { 
-        printf("\tconst bx,%s\n", $1); 
-        printf("\tloadw ax,bx\n");    
-        printf("\tpush ax\n");
-    }
-  | '(' EXPR ')'  { printf("Expression parenthésée\n"); }
-
-  | EXPR '<' EXPR{
-        int lv = label_count++;
-        int lf = label_count++;
-        
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tuless ax,bx\n");
-       
-        /*Cas de figure numéro 1 c'est vrais alors on saute dans lv*/
-        printf("\tconst dx, %s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-        printf("\tjmpc dx\n"); 
-
-        /*Cas de figure numéro 2 c'est faux alors on saute dans lf*/
-        printf("\tconst ax, 0\n");
-        printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/ 
-        printf("\tjmp dx\n");
-
-
-        /*On créer les endroits de sauts*/
-
-        printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-        printf("\tconst ax, 1\n");
-
-        printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-        printf("\tpush ax\n");
-    }
-    | EXPR '>' EXPR{
-        int lv = label_count++;
-        int lf = label_count++;
-        
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tsless bx,ax\n");
-       
-        /*Cas de figure numéro 1 c'est vrais alors on saute dans lv*/
-        printf("\tconst dx,%s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-        printf("\tjmpc dx\n"); 
-
-        /*Cas de figure numéro 2 c'est faux alors on saute dans lf*/
-        printf("\tconst ax, 0\n");
-        printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/ 
-        printf("\tjmp dx\n");
-
-
-        /*On créer les endroits de sauts*/
-
-        printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-        printf("\tconst ax, 1\n");
-
-        printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-        printf("\tpush ax\n");
-    }
-
-    | EXPR '=' EXPR{
-        int lv = label_count++;
-        int lf = label_count++;
-        
-        printf("\tpop bx\n");
-        printf("\tpop ax\n");
-        printf("\tcmp ax,bx\n");
-       
-        /*Cas de figure numéro 1 c'est vrais alors on saute dans lv*/
-        printf("\tconst dx, %s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-        printf("\tjmpc dx\n"); 
-
-        /*Cas de figure numéro 2 c'est faux alors on saute dans lf*/
-        printf("\tconst ax, 0\n");
-        printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/ 
-        printf("\tjmp dx\n");
-
-
-        /*On créer les endroits de sauts*/
-
-        printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-        printf("\tconst ax, 1\n");
-
-        printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-        printf("\tpush ax\n");
-    }
-    | EXPR SOE EXPR{
-            int lv = label_count++;
-            int lf = label_count++;
-            int lfin = label_count++;
-
-            printf("\tpop bx\n");
+        if (path == 1) {
+            printf(";Je suis la \n");
+            int l_fin = $<integer>2 & 0xFFFF;
             printf("\tpop ax\n");
-            printf("\tsless ax, bx\n");
-
-            /*Cas de figure numéro 1 c'est vrais alors on saute dans lf car c'est faux */
-            printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/
-            printf("\tjmpc dx\n");
-
-
-            /*Cas de figure numéro 2 c'est faux alors on saute dans lv*/
-            printf("\tconst dx,%s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-            printf("\tjmp dx\n");
-
-
-            printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-            printf("\tconst ax, 1\n");
-            printf("\tconst dx, %s%d\n", label_operateur, lfin);
-            printf("\tjmp dx");
-
-            printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-            printf("\tconst ax, 0\n");
-            printf("\tconst dx, %s%d\n", label_operateur, lfin);
-            printf("\tjmp dx");
-        
-
-            printf(":%s%d\n", label_operateur, lfin); /*Label de fin pour les deux cas*/
-            printf("\tpush ax\n");
-         }
-
-
-    | EXPR IOE EXPR{
-            int lv = label_count++;
-            int lf = label_count++;
-            int lfin = label_count++;
-
-            printf("\tpop bx\n");
-            printf("\tpop ax\n");
-            printf("\tluess ax, bx\n");
-
-            /*Cas de figure numéro 1 c'est vrais alors on saute dans lf car c'est faux */
-            printf("\tconst dx, %s%d\n", label_operateur, lf); /*Ce code est toujours le même*/
-            printf("\tjmpc dx\n");
-
-
-            /*Cas de figure numéro 2 c'est faux alors on saute dans lv*/
-            printf("\tconst dx,%s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
-            printf("\tjmp dx\n");
-
-
-            printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
-            printf("\tconst ax, 1\n");
-            printf("\tconst dx, %s%d\n", label_operateur, lfin);
-            printf("\tjmp dx");
-
-            printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
-            printf("\tconst ax, 0\n");
-            printf("\tconst dx, %s%d\n", label_operateur, lfin);
-            printf("\tjmp dx");
-        
-
-            printf(":%s%d\n", label_operateur, lfin); /*Label de fin pour les deux cas*/
-            printf("\tpush ax\n");
-         }
-
-  ;
-liste_param_call:
-    /* vide */                  
-    { 
-        $$ = 0; // 0 argument
+            printf("\tconst bx,0\n");
+            printf("\tconst dx,%s%d\n", label_dowhile, l_fin);
+            printf("\tcmp ax,bx\n");
+            printf("\tjmpc dx\n"); // Sort de la boucle si faux
+        }
     }
-    | EXPR                      
-    { 
-        $$ = 1; // 1 argument
-        // EXPR a déjà généré le "push ax" tout seul ! L'argument est sur la pile.
+    liste_instructions OD
+    {
+        if (path == 1) {
+            printf(";Je suis la  dans les instructions\n");
+
+            int l_debut = ($<integer>2 >> 16) & 0xFFFF;
+            int l_fin = $<integer>2 & 0xFFFF;
+            
+            printf("\tconst dx,%s%d\n", label_dowhile, l_debut);
+            printf("\tjmp dx\n"); // Retour au début
+            printf(":%s%d\n", label_dowhile, l_fin); // Label de sortie
+        }
     }
-    | liste_param_call ',' EXPR 
-    { 
-        $$ = $1 + 1; // On incrémente le compteur d'arguments
-        // Le nouvel EXPR est empilé au-dessus du précédent.
+    ;
+/* --- DOFORI --- */
+struct_dofori:
+    DOFORI '{' ID '}' '{' EXPR '}' 
+    {   
+        
+        Symbole *symb = rechercheExecutable($3);
+        if (symb == NULL) {
+            ajouteIdentificateur($3, C_VARIABLE, INT_T, offset_courant);
+            offset_courant += 2;
+        }
+        if(path == 1) {
+            int l_debut = ++label_count; 
+            int l_fin = ++label_count;
+            $<integer>$ = (l_debut << 16) | (l_fin & 0xFFFF); 
+
+            Symbole *symb = rechercheExecutable($3);
+            if(symb != NULL) {
+                printf("\tpop ax\n");                      
+                printf("\tcp bx,bp\n"); 
+                printf("\tconst cx,%d\n", symb->adresse); 
+                printf("\tadd bx,cx\n");                  
+                printf("\tstorew ax,bx\n");               
+                printf(":%s%d\n", label_dofori, l_debut);
+            }
+        }
+    }
+    '{' EXPR '}' 
+    {
+        if (path == 1) {
+            int l_fin = $<integer>8 & 0xFFFF; 
+            Symbole *symb = rechercheExecutable($3);
+            
+            printf("\tpop bx\n"); // Borne de fin
+            printf("\tcp cx,bp\n"); 
+            printf("\tconst dx,%d\n", symb->adresse); 
+            printf("\tadd cx,dx\n");      
+            printf("\tloadw ax,cx\n");    // Valeur de l'itérateur
+
+            printf("\tconst dx,%s%d\n", label_dofori, l_fin);
+            printf("\tsless bx,ax\n");    // Borne < Itérateur ?
+            printf("\tjmpc dx\n");         // On sort
+        }
+    }
+    liste_instructions OD
+    {
+        if (path == 1) {
+            int l_debut = ($<integer>8 >> 16) & 0xFFFF;
+            int l_fin = $<integer>8 & 0xFFFF;
+            Symbole *symb = rechercheExecutable($3);
+            
+            // Incrémentation
+            printf("\tcp cx,bp\n"); 
+            printf("\tconst dx,%d\n", symb->adresse); 
+            printf("\tadd cx,dx\n");      
+            printf("\tloadw ax,cx\n");    
+            printf("\tconst bx,1\n");
+            printf("\tadd ax,bx\n");      
+            printf("\tstorew ax,cx\n");   
+            
+            printf("\tconst dx,%s%d\n", label_dofori, l_debut);
+            printf("\tjmp dx\n");
+            printf(":%s%d\n", label_dofori, l_fin);
+        }
     }
     ;
 
+/* ========================================================================== */
+/* APPEL DE FONCTION ET EXPR                                                  */
+/* ========================================================================== */
 
 appel_final:
     CALL '{' ID '}' '{' liste_param_call '}'
     {
         if (path == 1) {
-            // 1. Appel de l'algorithme (identique au CALL normal)
-            printf("\tconst dx, :%s\n", $3);
+
+            printf("\tconst dx,%s\n", $3);
             printf("\tcall dx\n");
             
-            // 2. Nettoyage des arguments
             int nb_args = $6; 
             for(int i = 0; i < nb_args; i++) {
-                printf("\tpop cx\n");
+                printf("\tpop cx\n"); 
             }
             
-            // 3. Affichage du résultat final
-            // Le résultat est dans AX. SIPRO a besoin d'une adresse pour l'afficher.
-            // On le met sur la pile, on calcule son adresse, et on l'affiche !
-            printf("\tpush ax\n");         // On met le résultat sur la pile
-            printf("\tcp bx,sp\n");       // BX pointe sur le sommet de la pile
-            printf("\tconst cx,2\n");
-            printf("\tsub bx,cx\n");      // BX contient l'adresse exacte du résultat
-            printf("\tcallprintfd bx\n");  // Affiche l'entier signé à l'écran
-            printf("\tpop ax\n");          // On nettoie la pile
+            // Affichage du résultat final
+            // Affichage du résultat final
+            printf("\tpush ax\n");         
+            printf("\tcp bx,sp\n");       
+            // ON A SUPPRIMÉ LE const cx,2 ET LE sub bx,cx !
+            printf("\tcallprintfd bx\n");  
+            printf("\tpop ax\n");       
         }
     }
     ;
 
-liste_valeurs:
-    /* vide */
-    | INT
-    | liste_valeurs ',' INT
+appel_proc:
+    CALL '{' ID '}' '{' liste_param_call '}'
+    {
+        if (path == 1) {
+            printf("\tconst dx,%s\n", $3);
+            printf("\tcall dx\n");
+            int nb_args = $6; 
+            for(int i = 0; i < nb_args; i++) printf("\tpop cx\n");
+        }
+    }
+    ;
+
+liste_param_call:
+    /* vide */ { $$ = 0; }
+    | EXPR { $$ = 1; }
+    | liste_param_call ',' EXPR { $$ = $1 + 1; }
+    ;
+
+EXPR:
+    INT 
+    { 
+        if(path == 1) {
+            printf("\tconst ax,%d\n", $1);
+            printf("\tpush ax\n");
+        }
+    }
+    | TRUE
+    {
+        if(path == 1) {
+            printf("\tconst ax,1\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | FALSE
+    {
+        if(path == 1) {
+            printf("\tconst ax,0\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | ID 
+    { 
+        if (path == 1) {
+            Symbole *symb = rechercheExecutable($1);
+            if (symb != NULL) {
+                printf("\tcp bx,bp\n");
+                if (symb->adresse < 0) {
+                    printf("\tconst cx,%d\n", -symb->adresse);
+                    printf("\tsub bx,cx\n");
+                } else {
+                    printf("\tconst cx,%d\n", symb->adresse);
+                    printf("\tadd bx,cx\n");
+                }
+                printf("\tloadw ax,bx\n");
+                printf("\tpush ax\n");
+            }
+        }
+    }
+    | CALL '{' ID '}' '{' liste_param_call '}'
+    {
+        if (path == 1) {
+            printf("\tconst dx,%s\n", $3);
+            printf("\tcall dx\n");
+            
+            int nb_args = $6; 
+            for(int i = 0; i < nb_args; i++) {
+                printf("\tpop cx\n");
+            }
+            printf("\tpush ax\n"); // Range le retour du CALL pour le reste du calcul
+        }
+    }
+    | EXPR '+' EXPR 
+    {
+        if(path == 1) {
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,erreur_add_mul\n");
+            printf("\tadd ax,bx\n");
+            printf("\tjmpe dx\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR '-' EXPR 
+    {
+        if(path == 1) {
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tsub ax,bx\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR '*' EXPR 
+    {
+        if(path == 1) {
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,erreur_add_mul\n");
+            printf("\tmul ax,bx\n");
+            printf("\tjmpe dx\n");
+            printf("\tpush ax\n");
+        }
+    }
+    | EXPR '/' EXPR 
+    {
+        if(path == 1) {
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,erreur_div0\n");
+            printf("\tdiv ax,bx\n");
+            printf("\tjmpe dx\n");
+            printf("\tpush ax\n");
+
+
+        }
+    }
+   |EXPR '<' EXPR{
+        if(path ==1){
+            int lv = label_count++;
+            int lf = label_count++;
+            
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
+            printf("\tuless ax,bx\n");
+            
+            /*Cas de figure numéro 1 c'est vrais alors on saute dans lv*/
+            printf("\tjmpc dx\n"); 
+
+            /*Cas de figure numéro 2 c'est faux alors on saute dans lf*/
+            printf("\tconst ax,0\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lf); /*Ce code est toujours le même*/ 
+            printf("\tjmp dx\n");
+
+
+            /*On créer les endroits de sauts*/
+
+            printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
+            printf("\tconst ax,1\n");
+
+            printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
+            printf("\tpush ax\n");
+        }
+    }
+    |EXPR '>' EXPR{
+        if(path == 1){
+            int lv = label_count++;
+            int lf = label_count++;
+            
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lv);
+            printf("\tsless bx,ax\n");
+            
+            /*Cas de figure numéro 1 c'est vrais alors on saute dans lv*/
+            printf("\tjmpc dx\n"); 
+
+            /*Cas de figure numéro 2 c'est faux alors on saute dans lf*/
+            printf("\tconst ax,0\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lf); /*Ce code est toujours le même*/ 
+            printf("\tjmp dx\n");
+
+
+            /*On créer les endroits de sauts*/
+
+            printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
+            printf("\tconst ax,1\n");
+
+            printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
+            printf("\tpush ax\n");
+        }
+    }
+
+    |EXPR '=' EXPR{
+        if(path ==1){
+            int lv = label_count++;
+            int lf = label_count++;
+            
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lv);
+            printf("\tcmp ax,bx\n");
+        
+            /*Cas de figure numéro 1 c'est vrais alors on saute dans lv*/
+            printf("\tjmpc dx\n"); 
+            /*Cas de figure numéro 2 c'est faux alors on saute dans lf*/
+            printf("\tconst ax,0\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lf); /*Ce code est toujours le même*/ 
+            printf("\tjmp dx\n");
+
+
+            /*On créer les endroits de sauts*/
+
+            printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
+            printf("\tconst ax,1\n");
+
+            printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
+            printf("\tpush ax\n");
+        }
+    }
+    
+    | EXPR SOE EXPR { 
+        if(path == 1){
+            int lv = label_count++;
+            int lf = label_count++;
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tsless bx,ax\n"); // On vérifie si ax > bx
+            
+            // CORRECTION: Si bx < ax (donc ax > bx), la condition <= est FAUSSE
+            printf("\tconst dx,%s%d\n", label_operateur, lf); 
+            printf("\tjmpc dx\n"); // On saute direct au FAUX
+            
+            // Sinon (ax <= bx), c'est VRAI
+            printf("\tconst ax,1\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lv);
+            printf("\tjmp dx\n");
+            
+            printf(":%s%d\n", label_operateur, lf); // Cas FAUX
+            printf("\tconst ax,0\n");
+            
+            printf(":%s%d\n", label_operateur, lv); // FIN
+            printf("\tpush ax\n");
+        }
+    }
+
+
+    | EXPR IOE EXPR{
+        if(path == 1){
+            int lv = label_count++;
+            int lf = label_count++;
+            int lfin = label_count++;
+
+            printf("\tpop bx\n");
+            printf("\tpop ax\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lf); /*Ce code est toujours le même*/
+            printf("\tuless ax,bx\n");
+
+            /*Cas de figure numéro 1 c'est vrais alors on saute dans lf car c'est faux */
+            printf("\tjmpc dx\n");
+
+
+            /*Cas de figure numéro 2 c'est faux alors on saute dans lv*/
+            printf("\tconst dx,%s%d\n", label_operateur, lv); /*Ce code est toujours le même*/
+            printf("\tjmp dx\n");
+
+
+            printf(":%s%d\n", label_operateur, lv); /*Label pour le cas ou c'est vrais*/
+            printf("\tconst ax,1\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lfin);
+            printf("\tjmp dx\n");
+
+            printf(":%s%d\n", label_operateur, lf); /*Label pour le cas ou c'est faux*/
+            printf("\tconst ax,0\n");
+            printf("\tconst dx,%s%d\n", label_operateur, lfin);
+            printf("\tjmp dx\n");
+        
+
+            printf(":%s%d\n", label_operateur, lfin); /*Label de fin pour les deux cas*/
+            printf("\tpush ax\n");
+        }
+    }
+
     ;
 
 %%
 
 void yyerror(char const *s) {
-    fprintf(stderr, "Erreur syntaxique : %s\n", s);
+    fprintf(stderr, "Erreur de syntaxe : %s\n", s);
 }
 
-int main() {
-    printf("Début de la compilation...\n");
-    if(yyparse() == 0){
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s fichier.algo\n", argv[0]);
         return EXIT_FAILURE;
     }
-    path++;
-    yyparse();
-    printf("Compilation terminée sans erreur syntaxique !\n");
 
-    /*IL faut retourner le bon type de retour si on retourne un entier on affiche un entier et si c'est un boolean un boolean (true/false)*/
+    yyin = fopen(argv[1], "r");
+    if (!yyin) {
+        perror("Erreur d'ouverture du fichier");
+        return EXIT_FAILURE;
+    }
+
+    // --- PASSE 1 : Construction de la table et des offsets ---
+    path = 0;
+    initDico(); 
+    if (yyparse() != 0) {
+        fclose(yyin);
+        return EXIT_FAILURE;
+    }
+
+   // --- ON REVIENT AU DÉBUT DU FICHIER ---
+    rewind(yyin); 
+    yyrestart(yyin); // <--- LA LIGNE MAGIQUE POUR SAUVER LA PASSE 2 !
+
+    // --- PASSE 2 : Génération de l'assembleur SIPRO ---
+    path = 1;
     
+    // Initialisation : On place la pile à 10000 et ON SAUTE AU DÉBUT
+    printf("\tconst ax,pile\n");          
+    printf("\tcp bp,ax\n");                 
+    printf("\tcp sp,ax\n");
+    printf("\tconst ax,debut_programme\n"); // On charge l'adresse
+    printf("\tjmp ax\n\n");                 // On saute par-dessus les fonctions !
+   
+    if (yyparse() != 0) {
+        fclose(yyin);
+        return EXIT_FAILURE;
+    }
+
+    printf("\tend\n");
+
+    //Gestion des erreurs 
+    printf(":erreur_div0\n");
+    printf("\tconst ax,msg_div0\n");
+    printf("\tcallprintfs ax\n"); // Affiche le message d'erreur 
+    printf("\tend\n");
+
+    printf(":erreur_add_mul\n");
+    printf("\tconst ax,msg_add_mul\n");
+    printf("\tcallprintfs ax\n"); // Affiche le message d'erreur 
+    printf("\tend\n");
+
+
+    //Gestion des messages d'erreurs 
+    printf(":msg_div0\n");
+    printf("@string \"Erreur fatale : Division par zero !\\n\"\n");
+
+    printf(":msg_add_mul\n");
+    printf("@string \"Erreur fatale : entier trop grand!\\n\"\n");
+
+
+    printf(":pile\n");     
+    printf("@int 0\n");
+    
+    fclose(yyin);
     return EXIT_SUCCESS;
-    //rewind entre les deux path pour repartir au début du fichier lors de la 2e passe
 }
