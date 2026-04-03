@@ -12,9 +12,9 @@
   - \DOFORI
     - Gère l'incrémentation automatique et la borne de fin. 
   - \CALL
-    - Gére le cas des appeles récurssif et des appeles d'autre fonctions   
+    - Gére le cas des appels récurssif et appel d'autres fonctions   
   - \RETURN
-    - Retourne forcément un entier, nous n'avons pas implémenté la fonctionnalité de déduire la valeur de retour en fonction des paramètres   
+    - Retourne forcément un entier, nous n'avons pas implémenté la fonctionnalité de déduire la valeur de retour en fonction de la valeurs des paramètres. Pour un retour boolean(1 == true et 0 == false)   
 
 <H2>La table des symboles</H2>
 L'implémentation de la table des symboles (symbole.c/.h) est l'un des piliers du projet. Elle gère la portée lexicale de manière dynamique :
