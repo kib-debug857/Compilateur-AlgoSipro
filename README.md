@@ -4,12 +4,13 @@
 
 - Les commandes utilisables :
   - \SET
-      - Pour affecter une valeur à une variable il faut concerver le type de celle ci (un Entier restera un Entier).
+      - Affectation de variable (vérification stricte du type(inférence à la 1ère affectation))
   - \IF && \ELSE
-    - Il est possible d'écrire une condition simple avec un simple IF comme une condition complexe avec un IF/ELSE.
+    - Il est possible d'écrire une condition simple avec un simple IF comme une condition complexe avec un IF/ELSE. La condition doit être obligatoirement de type BOOL_T
   - \DOWHILE
-    -   Il est possible d'imbriqué plusieurs boucles entre elles (dofori && dowhile)
+    -   Il est possible d'imbriqué plusieurs boucles entre elles (dofori && dowhile).
   - \DOFORI
+    - Gère l'incrémentation automatique et la borne de fin. 
   - \CALL
     - Gére le cas des appeles récurssif et des appeles d'autre fonctions   
   - \RETURN
@@ -42,3 +43,7 @@ Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement
 | 2.Exécution | ```bash sipro test.sipro ``` |Lance l'émulateur et affiche le résultat final.|
 
 
+<H2>Sécurité Sémantique Interne</H2>
+Le compilateur intègre des routines de gestion d'erreurs : 
+- **Division par zéro** : Branchement automatique vers :erreur_div0
+- 
