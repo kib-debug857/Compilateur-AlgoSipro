@@ -41,7 +41,7 @@ Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement
 
 | Etape| Code| Description|
 | :--- | :--- | :---|
-| 1.Compilation | ```./compil test.algo > test.asm```  |Traduit le code Argo en assembleur SIPRO.|
+| 1.Compilation | ```./compil test.algo > test.asm```  |Traduit le code Argo en assembleur SIPRO. Prendre le bon fichier de test|
 | 2.Assemblage | ```  asipro test.asm test.sipro```|Génère le fichier binaire exécutable.|
 | 2.Exécution | ``` sipro test.sipro ``` |Lance l'émulateur et affiche le résultat final.|
 
