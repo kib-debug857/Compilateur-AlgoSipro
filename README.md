@@ -42,12 +42,13 @@ Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement
 | Etape| Code| Description|
 | :--- | :--- | :---|
 | 1.Compilation | ```./compil test.algo > test.asm```  |Traduit le code Argo en assembleur SIPRO.|
-| 2.Assemblage | ``` bash asipro test.asm test.sipro```|Génère le fichier binaire exécutable.|
-| 2.Exécution | ``` bash sipro test.sipro ``` |Lance l'émulateur et affiche le résultat final.|
+| 2.Assemblage | ```  asipro test.asm test.sipro```|Génère le fichier binaire exécutable.|
+| 2.Exécution | ``` sipro test.sipro ``` |Lance l'émulateur et affiche le résultat final.|
 
 
 <H2>Sécurité Sémantique Interne</H2>
 Le compilateur intègre des routines de gestion d'erreurs : 
+
   - **Division par zéro** : Branchement automatique vers :erreur_div0
   - **Débordement (Overflow)** : Détecté lors des additions et multiplications. 
   - **Typage** : Les opérations arithmétiques rejettent les booléens
