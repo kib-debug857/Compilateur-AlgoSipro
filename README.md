@@ -17,7 +17,7 @@
     - Retourne forcément un entier, nous n'avons pas implémenté la fonctionnalité de déduire la valeur de retour en fonction des paramètres   
 
 <H2>La table des symboles</H2>
-L'implémentation de la table des symboles (symbole.c/h) est l'un des piliers du projet. Elle gère la portée lexicale de manière dynamique :
+L'implémentation de la table des symboles (symbole.c/.h) est l'un des piliers du projet. Elle gère la portée lexicale de manière dynamique :
 
 - Structure Hiérarchique : Chaque algorithme possède son propre environnement (Env) relié à un parent (le contexte global). Cela permet d'isoler les variables locales et d'autoriser la récursivité.
 - Gestion des Portées : Les fonctions entreeFonction() et sortieFonction() ouvrent et ferment les contextes lors de la détection des balises \begin{algo} et \end{algo}.
