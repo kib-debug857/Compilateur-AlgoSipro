@@ -1,41 +1,94 @@
-# 🎓 Compilateur AlgoSIPRO (LaTeX vers Assembleur)
+ <H1>Compilateur Asipro pour fichier Latex</H1>
 
-[cite_start]Ce projet implémente un compilateur complet pour le langage Argo (format LaTeX), ciblant l'architecture virtuelle 16 bits SIPRO [cite: 179-182].
 
-## 🚀 Fonctionnalités implémentées
+<H2>Les fonctionnalités implémentées</H2>
 
-[cite_start]Le compilateur traite des fichiers contenant un ou plusieurs algorithmes, suivis d'un appel final.
 
-* **Gestion des Algorithmes :**
-    * Support des définitions multiples (`\begin{algo} ... \end{algo}`).
-    * [cite_start]**Appels récursifs** et appels de fonctions tierces.
-    * Gestion des arguments (offsets positifs par rapport à BP) et des variables locales (offsets négatifs).
-* **Structures de contrôle :**
-    * [cite_start]`\SET` : Affectation avec inférence de type et vérification stricte [cite: 33-35].
-    * [cite_start]`\IF` / `\ELSE` / `\FI` : Conditionnelles imbriquées (type `BOOL_T` requis) [cite: 41-42].
-    * [cite_start]`\DOWHILE` / `\OD` : Boucles conditionnelles [cite: 49-55].
-    * [cite_start]`\DOFORI` / `\OD` : Boucles itératives avec gestion automatique de l'itérateur [cite: 55-74].
-* [cite_start]**Entrées/Sorties :** Affichage automatique du résultat du dernier `\CALL` (Entier ou Booléen)[cite: 195].
+- Les commandes utilisables :
 
-## 🏗️ Architecture Technique
+  - \SET
 
-* [cite_start]**Analyse en deux passes :** La première passe (`path=0`) construit la table des symboles et calcule les offsets ; la seconde passe (`path=1`) génère le code assembleur SIPRO [cite: 3, 153-157].
-* **Table des Symboles :** Utilisation d'environnements chaînés pour gérer la portée lexicale et les variables locales.
-* **Modèle de Pile :**
-    * Arguments : `BP + 4`, `BP + 6`...
-    * Locales : `BP - 2`, `BP - 4`...
-    * [cite_start]Sauvegarde du contexte (BP) à chaque entrée de fonction[cite: 19, 23].
+      - Affectation de variable (vérification stricte du type(inférence à la 1ère affectation))
 
-## 🛡️ Sécurité Sémantique
+  - \IF && \ELSE
 
-Le compilateur injecte des routines de sécurité directement dans l'assembleur généré :
-* [cite_start]**Division par zéro** : Interception et arrêt propre avec message d'erreur [cite: 122, 160-161].
-* [cite_start]**Overflow** : Détection des dépassements d'entiers 16 bits (`jmpe`)[cite: 111, 118].
-* [cite_start]**Vérification de type** : Rejet des opérations arithmétiques sur booléens et des conditions sur entiers [cite: 109-121].
+    - Il est possible d'écrire une condition simple avec un simple IF comme une condition complexe avec un IF/ELSE. La condition doit être obligatoirement de type BOOL_T
 
-## ⚙️ Guide d'Exécution
+  - \DOWHILE
 
-### Installation
-```bash
-make clean
-make
+    -   Il est possible d'imbriqué plusieurs boucles entre elles (dofori && dowhile).
+
+  - \DOFORI
+
+    - Gère l'incrémentation automatique et la borne de fin. 
+
+  - \CALL
+
+    - Gére le cas des appels récurssif et appel d'autres fonctions   
+
+  - \RETURN
+
+    - Retourne le resultat de l'appel entier ou booléen  
+
+
+<H2>La table des symboles</H2>
+
+L'implémentation de la table des symboles (symbole.c/.h) est l'un des piliers du projet. Elle gère la portée lexicale de manière dynamique :
+
+
+- Structure Hiérarchique : Chaque algorithme possède son propre environnement (Env) relié à un parent (le contexte global). Cela permet d'isoler les variables locales et d'autoriser la récursivité.
+
+- Gestion des Portées : Les fonctions entreeFonction() et sortieFonction() ouvrent et ferment les contextes lors de la détection des balises \begin{algo} et \end{algo}.
+
+- Modèle Mémoire : Les adresses sont calculées en offsets relatifs par rapport au registre de base BP :
+
+  - Arguments : Offsets positifs (ex: BP + 4, BP + 6).
+
+  - Variables locales : Offsets négatifs (ex: BP - 2, BP - 4). 
+
+
+<H2>Guide d'Exécution</H2>
+
+
+**Prérequis matériels**
+
+
+Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement SIPRO sur votre machine :
+
+
+- asipro : L'assembleur pour transformer votre code .asm en binaire.
+
+- sipro : L'émulateur (processeur virtuel 16 bits) pour exécuter le programme final.
+
+- Flex & Bison : Pour la génération de l'analyseur lexical et syntaxique.
+
+- Bien penser à éxécuter :
+
+  - ```bash make clean ```
+
+  - ```bash make ``` 
+
+
+
+| Etape| Code| Description|
+
+| :--- | :--- | :---|
+
+| 1.Compilation | ```./compil test.algo > test.asm```  |Traduit le code Argo en assembleur SIPRO. Prendre le bon fichier de test|
+
+| 2.Assemblage | ```  asipro test.asm test.sipro```|Génère le fichier binaire exécutable.|
+
+| 2.Exécution | ``` sipro test.sipro ``` |Lance l'émulateur et affiche le résultat final.|
+
+
+
+<H2>Sécurité Sémantique Interne</H2>
+
+Le compilateur intègre des routines de gestion d'erreurs : 
+
+
+  - **Division par zéro** : Branchement automatique vers :erreur_div0
+
+  - **Débordement (Overflow)** : Détecté lors des additions et multiplications. 
+
+  - **Typage** : Les opérations arithmétiques rejettent les booléens 
