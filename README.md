@@ -45,5 +45,6 @@ Pour compiler et exécuter ce projet, vous devez avoir installé l'environnement
 
 <H2>Sécurité Sémantique Interne</H2>
 Le compilateur intègre des routines de gestion d'erreurs : 
-- **Division par zéro** : Branchement automatique vers :erreur_div0
-- 
+  - **Division par zéro** : Branchement automatique vers :erreur_div0
+  - **Débordement (Overflow)** : Détecté lors des additions et multiplications. 
+  - **Typage** : Les opérations arithmétiques rejettent les booléens
